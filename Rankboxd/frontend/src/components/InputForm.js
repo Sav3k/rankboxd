@@ -72,7 +72,7 @@ function InputForm({ onSubmit }) {
     setLoading(true);
     setErrorMessage('');
     try {
-      const response = await fetch(`http://localhost:3001/fetch-movies?url=${encodeURIComponent(input)}`);
+      const response = await fetch(`${process.env.REACT_APP_API_URL}/fetch-movies?url=${encodeURIComponent(input)}`);
       const data = await response.json();
   
       if (!response.ok) {
