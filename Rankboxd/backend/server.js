@@ -9,7 +9,7 @@ console.log('Modules loaded');
 
 const app = express();
 const port = 3001;
-const OMDb_API_KEY = '9b95cc86';
+const OMDb_API_KEY = process.env.API_KEY;
 
 console.log('Express app created');
 
