@@ -8,12 +8,16 @@ const cheerio = require('cheerio');
 console.log('Modules loaded');
 
 const app = express();
-const port = 3001;
-const OMDb_API_KEY = process.env.API_KEY;
+const port = process.env.PORT || 3001;
+const OMDb_API_KEY = process.env.OMDB_API_KEY;
 
 console.log('Express app created');
 
-app.use(cors());
+app.use(cors({
+  origin: process.env.NODE_ENV === 'production' 
+    ? ['https://rankboxd.vercel.app'] 
+    : 'http://localhost:3000'
+}));
 app.use(express.json());
 
 app.get('/fetch-movies', async (req, res) => {
