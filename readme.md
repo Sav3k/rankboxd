@@ -59,4 +59,4 @@ Built with React, Node.js, Express, Tailwind CSS, and DaisyUI.
 
 ---
 
-*Note: This is a personal project and is not affiliated with Letterboxd.*
+*Note: This is a personal project and is not affiliated with Letterboxd. Generative AI was used in the creation of this project.*
