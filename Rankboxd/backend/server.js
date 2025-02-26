@@ -13,11 +13,8 @@ const OMDb_API_KEY = process.env.OMDB_API_KEY;
 
 console.log('Express app created');
 
-app.use(cors({
-  origin: process.env.NODE_ENV === 'production' 
-    ? ['https://rankboxd.vercel.app'] 
-    : 'http://localhost:3000'
-}));
+app.use(cors({ origin: '*' }))
+
 app.use(express.json());
 
 app.get('/fetch-movies', async (req, res) => {

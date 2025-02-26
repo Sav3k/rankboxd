@@ -21,6 +21,8 @@
 .env.test.local
 .env.production.local
 .env.production
+.env.development.env.production.local
+.env.production
 .env.development
 
 # logs
