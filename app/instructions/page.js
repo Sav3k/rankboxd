@@ -1,6 +1,10 @@
-import React from 'react';
+'use client';
+
+import { useRouter } from 'next/navigation';
 import { Zap, ArrowLeft, ArrowRight, RotateCcw, Star } from 'lucide-react';
 import { motion } from 'framer-motion';
+import { useMovieStore } from '@/app/store/movieStore';
+import { useEffect } from 'react';
 
 const container = {
   hidden: { opacity: 0 },
@@ -18,7 +22,22 @@ const item = {
   show: { opacity: 1, y: 0 }
 };
 
-const Instructions = ({ onContinue }) => {
+export default function Instructions() {
+  const router = useRouter();
+  const { movies, setStep } = useMovieStore();
+  
+  useEffect(() => {
+    // Redirect to home if no movies are loaded
+    if (!movies || movies.length === 0) {
+      router.push('/');
+    }
+  }, [movies, router]);
+
+  const handleContinue = () => {
+    setStep('ranking');
+    router.push('/ranking');
+  };
+
   return (
     <div className="container mx-auto py-4 px-6 max-w-4xl">
       <motion.div
@@ -39,32 +58,32 @@ const Instructions = ({ onContinue }) => {
             <div className="bg-base-200 rounded-xl p-6 overflow-hidden h-full">
               <div className="relative">
                 {/* Comparison Preview */}
-                    <div className="grid grid-cols-2 gap-6 mb-6">
-                    <div className="relative group">
-                        <div className="aspect-[2/3] rounded-md bg-base-300/30 overflow-hidden max-w-[140px] mx-auto">
-                        <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
-                        <div className="absolute bottom-0 left-0 right-0 p-2.5">
-                            <div className="h-3 w-16 bg-white/10 rounded-sm animate-pulse" />
-                            <div className="h-2 w-10 bg-white/10 rounded-sm mt-1.5" />
-                        </div>
-                        </div>
-                        <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                        <ArrowLeft className="w-5 h-5 text-primary" />
-                        </div>
+                <div className="grid grid-cols-2 gap-6 mb-6">
+                  <div className="relative group">
+                    <div className="aspect-[2/3] rounded-md bg-base-300/30 overflow-hidden max-w-[140px] mx-auto">
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
+                      <div className="absolute bottom-0 left-0 right-0 p-2.5">
+                        <div className="h-3 w-16 bg-white/10 rounded-sm animate-pulse" />
+                        <div className="h-2 w-10 bg-white/10 rounded-sm mt-1.5" />
+                      </div>
                     </div>
-                    <div className="relative group">
-                        <div className="aspect-[2/3] rounded-md bg-base-300/30 overflow-hidden max-w-[140px] mx-auto">
-                        <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
-                        <div className="absolute bottom-0 left-0 right-0 p-2.5">
-                            <div className="h-3 w-16 bg-white/10 rounded-sm animate-pulse" />
-                            <div className="h-2 w-10 bg-white/10 rounded-sm mt-1.5" />
-                        </div>
-                        </div>
-                        <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                        <ArrowRight className="w-5 h-5 text-primary" />
-                        </div>
+                    <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                      <ArrowLeft className="w-5 h-5 text-primary" />
                     </div>
+                  </div>
+                  <div className="relative group">
+                    <div className="aspect-[2/3] rounded-md bg-base-300/30 overflow-hidden max-w-[140px] mx-auto">
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
+                      <div className="absolute bottom-0 left-0 right-0 p-2.5">
+                        <div className="h-3 w-16 bg-white/10 rounded-sm animate-pulse" />
+                        <div className="h-2 w-10 bg-white/10 rounded-sm mt-1.5" />
+                      </div>
                     </div>
+                    <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                      <ArrowRight className="w-5 h-5 text-primary" />
+                    </div>
+                  </div>
+                </div>
 
                 {/* Controls */}
                 <div className="grid grid-cols-3 gap-2">
@@ -136,18 +155,16 @@ const Instructions = ({ onContinue }) => {
 
         {/* Start Button */}
         <motion.div variants={item} className="text-center">
-        <button 
-            onClick={onContinue}
+          <button 
+            onClick={handleContinue}
             className="btn btn-primary btn-wide gap-2 relative group"
-            >
+          >
             <div className="absolute inset-0 -z-10 bg-primary/20 blur-md rounded-lg opacity-0 group-hover:opacity-100 transition-opacity" />
             Start Comparing
             <Zap className="w-4 h-4" />
-            </button>
+          </button>
         </motion.div>
       </motion.div>
     </div>
   );
-};
-
-export default Instructions;
+}
