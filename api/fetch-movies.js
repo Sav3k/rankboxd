@@ -1,9 +1,10 @@
+// api/fetch-movies.js
 import axios from 'axios';
-import cheerio from 'cheerio';
-import cors from 'cors';
+import { load } from 'cheerio';
+import Cors from 'cors';
 
 // Initialize CORS middleware
-const corsMiddleware = cors({
+const cors = Cors({
   origin: process.env.NODE_ENV === 'production' 
     ? process.env.ALLOWED_ORIGIN || '*'
     : '*'
@@ -29,44 +30,52 @@ async function fetchAllMovies(baseUrl, page = 1, accumulatedMovies = []) {
 
   const response = await axios.get(pageUrl);
   const html = response.data;
-  const $ = cheerio.load(html);
+  const $ = load(html);
 
   const movieElements = $('li.film-detail');
-  const movieData = movieElements.map((index, element) => {
+  const movieData = [];
+  
+  movieElements.each((index, element) => {
     const $element = $(element);
     const posterElement = $element.find('.film-poster img');
     const title = posterElement.attr('alt');
     const yearElement = $element.find('small.metadata a');
     const year = yearElement.text().trim();
-    const titleSlug = title.toLowerCase().replace(/\s+/g, '-');
-    const identifier = `${titleSlug}-${year}`;
-
-    return {
-      title,
-      year,
-      identifier,
-      poster: null
-    };
-  }).get().filter(Boolean);
+    
+    if (title && year) {
+      const titleSlug = title.toLowerCase().replace(/\s+/g, '-');
+      const identifier = `${titleSlug}-${year}`;
+      
+      movieData.push({
+        title,
+        year,
+        identifier,
+        poster: null
+      });
+    }
+  });
 
   // Fetch poster URLs using the OMDb API
   const OMDb_API_KEY = process.env.OMDB_API_KEY;
-    if (!OMDb_API_KEY) {
+  if (!OMDb_API_KEY) {
     console.warn('Warning: OMDB_API_KEY is not set in environment variables');
-    }
+  }
 
-    const posterPromises = movieData.map(async (movie) => {
+  const movies = [];
+  for (const movie of movieData) {
     try {
+      if (OMDb_API_KEY) {
         const response = await axios.get(`https://www.omdbapi.com/?t=${encodeURIComponent(movie.title)}&y=${movie.year}&apikey=${OMDb_API_KEY}`);
         const poster = response.data.Poster !== 'N/A' ? response.data.Poster : null;
-        return { ...movie, poster };
+        movies.push({ ...movie, poster });
+      } else {
+        movies.push(movie);
+      }
     } catch (error) {
-        console.error(`Error fetching poster for "${movie.title}": `, error);
-        return movie;
+      console.error(`Error fetching poster for "${movie.title}": `, error);
+      movies.push(movie);
     }
-    });
-
-  const movies = await Promise.all(posterPromises);
+  }
 
   console.log(`Found ${movieElements.length} movies on page ${page}`);
   const allMovies = [...accumulatedMovies, ...movies];
@@ -80,28 +89,29 @@ async function fetchAllMovies(baseUrl, page = 1, accumulatedMovies = []) {
   }
 }
 
+// Export a default function for the API route handler
 export default async function handler(req, res) {
-  // Run the CORS middleware
-  await runMiddleware(req, res, corsMiddleware);
-  
-  // Only allow GET requests
-  if (req.method !== 'GET') {
-    return res.status(405).json({ 
-      status: 'error',
-      message: 'Method not allowed'
-    });
-  }
-
-  const { url } = req.query;
-  
-  if (!url) {
-    return res.status(400).json({ 
-      status: 'error',
-      message: 'URL is required'
-    });
-  }
-
+  // Add CORS headers
   try {
+    await runMiddleware(req, res, cors);
+    
+    // Only allow GET requests
+    if (req.method !== 'GET') {
+      return res.status(405).json({ 
+        status: 'error',
+        message: 'Method not allowed'
+      });
+    }
+
+    const { url } = req.query;
+    
+    if (!url) {
+      return res.status(400).json({ 
+        status: 'error',
+        message: 'URL is required'
+      });
+    }
+
     const result = await fetchAllMovies(url);
     console.log('Sample movie data:', result.movies.slice(0, 2));
     
@@ -110,12 +120,13 @@ export default async function handler(req, res) {
       data: result
     });
   } catch (error) {
-    console.error('Error fetching movies:', error);
+    console.error('Error in API handler:', error);
     
     return res.status(500).json({ 
       status: 'error',
       message: 'Failed to fetch movies',
-      debug: error.message 
+      debug: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 }
