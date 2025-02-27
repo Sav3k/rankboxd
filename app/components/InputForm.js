@@ -14,7 +14,7 @@ function InputForm({ onSubmit }) {
     try {
       const url = new URL(string);
       return url.protocol === 'http:' || url.protocol === 'https:';
-    } catch (_) {
+    } catch {
       return false;
     }
   };
