@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 import axios from 'axios';
-import cheerio from 'cheerio';
-import { headers } from 'next/headers';
+import * as cheerio from 'cheerio';
 
 // Helper function to fetch all movies from a Letterboxd list
 async function fetchAllMovies(baseUrl, page = 1, accumulatedMovies = []) {

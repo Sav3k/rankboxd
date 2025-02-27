@@ -24,7 +24,7 @@ const ExplanationContent = () => (
           <h3 className="font-semibold">Confidence Score</h3>
         </div>
         <p className="text-sm text-base-content/70 leading-relaxed">
-          Each movie's position has a confidence score based on consistency in comparisons and number 
+          Each movie&apos;s position has a confidence score based on consistency in comparisons and number 
           of matchups. Higher scores mean more reliable rankings.
         </p>
       </div>

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useMovieStore } from '../store/movieStore';
 import RankingProcess from '../components/RankingProcess';
@@ -14,6 +14,12 @@ function RankingPage() {
     setStep
   } = useMovieStore();
   
+  // Function to handle finishing the ranking process
+  const finishRanking = useCallback(() => {
+    setStep('results');
+    router.push('/results');
+  }, [setStep, router]);
+  
   // Redirect if no movies are loaded
   useEffect(() => {
     if (!movies || movies.length < 2) {
@@ -26,12 +32,7 @@ function RankingPage() {
     if (comparisons >= maxComparisons) {
       finishRanking();
     }
-  }, [comparisons, maxComparisons]);
-
-  const finishRanking = () => {
-    setStep('results');
-    router.push('/results');
-  };
+  }, [comparisons, maxComparisons, finishRanking]);
 
   return (
     <div className="container mx-auto px-4 py-8 max-w-6xl relative">

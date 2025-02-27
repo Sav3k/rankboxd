@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { AlertCircle, ChevronUp, Download, LineChart } from 'lucide-react';
 import MovieStatsPanel from './MovieStatsPanel';
 import EnhancedExplanation from './Explanation';
+import Image from 'next/image';
 
 const MovieResults = ({ rankings, calculateConfidence }) => {
   const [expandedMovie, setExpandedMovie] = useState(null);
@@ -107,7 +108,7 @@ const MovieResults = ({ rankings, calculateConfidence }) => {
                       <li>Your movie list was particularly large</li>
                     </ul>
                     <div className="mt-3 text-base-content/90 font-medium">
-                      Tip: Try running the ranking again in "Thorough Mode" for higher accuracy.
+                      Tip: Try running the ranking again in &quot;Thorough Mode&quot; for higher accuracy.
                     </div>
                   </div>
                 </div>
@@ -139,6 +140,7 @@ const MovieResults = ({ rankings, calculateConfidence }) => {
               
               {/* Movie Poster */}
               <div className="w-16 h-24 flex-shrink-0 overflow-hidden rounded shadow-md">
+                {/* Note: We'll keep using img for now but note that next/image would be better */}
                 <img
                   src={rankingData.movie.poster || '/api/placeholder/400/600'}
                   alt={rankingData.movie.title}

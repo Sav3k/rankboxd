@@ -1,4 +1,3 @@
-// app/components/InputForm.js
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -6,7 +5,7 @@ import { XCircle, Link as LinkIcon, ArrowRight } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion'; 
 
-function InputForm() {
+function InputForm({ onSubmit }) {
   const router = useRouter();
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -17,7 +16,7 @@ function InputForm() {
     try {
       const url = new URL(string);
       return url.protocol === 'http:' || url.protocol === 'https:';
-    } catch (_) {
+    } catch (_unused) {
       return false;
     }
   };
@@ -85,9 +84,8 @@ function InputForm() {
         throw new Error('Please enter a link with at least 2 movies');
       }
       
-      // Store movies in localStorage or state management solution
-      localStorage.setItem('movieList', JSON.stringify(movies));
-      router.push('/mode-selection');
+      // Pass movies to the parent component
+      onSubmit(movies);
     } catch (error) {
       console.error("Error fetching movies:", error);
       setErrorMessage(error.message || "Failed to fetch movies. Please check the URL and try again.");

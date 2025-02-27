@@ -58,9 +58,7 @@ const StatBox = ({ label, value, icon: Icon, detail = null, valueColor = null })
 );
 
 const MovieStatsPanel = ({ 
-  movie, 
   stats: { 
-    rating, 
     wins, 
     losses, 
     comparisons, 

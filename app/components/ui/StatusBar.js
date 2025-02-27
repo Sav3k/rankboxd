@@ -29,7 +29,6 @@ const StatusBar = ({
   comparisons, 
   maxComparisons,
   avgConfidence,
-  stabilityScore,
   estimatedMinutesLeft
 }) => {
   const progress = comparisons / maxComparisons || 0;

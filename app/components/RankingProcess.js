@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useMovieStore } from '../store/movieStore';
 
-function RankingProcess({ onFinish }) {
+export default function RankingProcess({ onFinish }) {
   const {
     movies,
     rankings,
@@ -366,6 +366,7 @@ function RankingProcess({ onFinish }) {
               }`}>
                 {/* Poster Container with fixed aspect ratio */}
                 <div className="absolute inset-0">
+                  {/* Consider replacing with Next.js Image component later */}
                   <img
                     src={movie.poster || '/api/placeholder/400/600'}
                     alt={movie.title}

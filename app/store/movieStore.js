@@ -26,7 +26,7 @@ export const useMovieStore = create((set) => ({
   
   // Actions
   setMovies: (movieList) => {
-    set((state) => {
+    set(() => {
       const initialRankings = movieList.reduce((acc, movie) => {
         acc[movie.identifier] = {
           rating: 0,
