@@ -2,8 +2,8 @@
 
 import React, { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { useMovieStore } from '@/app/store/movieStore';
-import MovieResults from '@/app/components/Results';
+import { useMovieStore } from '../store/movieStore';
+import MovieResults from '../components/Results';
 
 // Helper function to calculate confidence scores for movies
 const calculateEnhancedConfidence = (movieId, rankings, allMovies) => {

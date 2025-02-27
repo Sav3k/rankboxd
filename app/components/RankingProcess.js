@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { useMovieStore } from '@/app/store/movieStore';
+import { useMovieStore } from '../store/movieStore';
 
 function RankingProcess({ onFinish }) {
   const {

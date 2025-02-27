@@ -3,7 +3,7 @@
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Timer, Zap, Target } from 'lucide-react';
-import { useMovieStore } from '@/app/store/movieStore';
+import { useMovieStore } from '../store/movieStore';
 
 const RANKING_CONSTANTS = {
   QUICK_MULTIPLIER: 1.5,

@@ -3,7 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { Zap, ArrowLeft, ArrowRight, RotateCcw, Star } from 'lucide-react';
 import { motion } from 'framer-motion';
-import { useMovieStore } from '@/app/store/movieStore';
+import { useMovieStore } from '../store/movieStore';
 import { useEffect } from 'react';
 
 const container = {

@@ -1,7 +1,7 @@
 'use client';
 
-import InputForm from '@/app/components/InputForm';
-import { useMovieStore } from '@/app/store/movieStore';
+import InputForm from './components/InputForm';
+import { useMovieStore } from './store/movieStore';
 import { useRouter } from 'next/navigation';
 
 export default function Home() {

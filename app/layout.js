@@ -1,8 +1,8 @@
-import '@/app/styles/globals.css';
+import './styles/globals.css';
+import ProgressBar from './components/ui/ProgressBar';
+import StatusBar from './components/ui/StatusBar';
+import { useMovieStore } from './store/movieStore';
 import { Crimson_Text } from 'next/font/google';
-import ProgressBar from '@/app/components/ui/ProgressBar';
-import StatusBar from '@/app/components/ui/StatusBar';
-import { useMovieStore } from '@/app/store/movieStore';
 
 // Initialize fonts
 const crimson = Crimson_Text({

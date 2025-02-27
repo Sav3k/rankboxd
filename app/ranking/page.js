@@ -2,8 +2,8 @@
 
 import React, { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { useMovieStore } from '@/app/store/movieStore';
-import RankingProcess from '@/app/components/RankingProcess';
+import { useMovieStore } from '../store/movieStore';
+import RankingProcess from '../components/RankingProcess';
 
 function RankingPage() {
   const router = useRouter();
