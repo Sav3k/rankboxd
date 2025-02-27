@@ -6,7 +6,7 @@ import { useMovieStore } from '../store/movieStore';
 import MovieResults from '../components/Results';
 
 // Helper function to calculate confidence scores for movies
-const calculateEnhancedConfidence = (movieId, rankings, allMovies) => {
+const calculateEnhancedConfidence = (movieId, rankings) => {
   const record = rankings[movieId];
   if (!record || record.comparisons < 3) {
     return 0.2; // Minimum baseline confidence of 20%
@@ -83,7 +83,7 @@ export default function ResultsPage() {
   }, [movies, rankings, router, setStep]);
 
   const calculateConfidence = (movieId) => {
-    return calculateEnhancedConfidence(movieId, rankings, movies);
+    return calculateEnhancedConfidence(movieId, rankings);
   };
 
   return (

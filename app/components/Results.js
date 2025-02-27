@@ -140,14 +140,15 @@ const MovieResults = ({ rankings, calculateConfidence }) => {
               
               {/* Movie Poster */}
               <div className="w-16 h-24 flex-shrink-0 overflow-hidden rounded shadow-md">
-                {/* Note: We'll keep using img for now but note that next/image would be better */}
-                <img
-                  src={rankingData.movie.poster || '/api/placeholder/400/600'}
-                  alt={rankingData.movie.title}
-                  className={`w-full h-full object-cover rounded transition-transform duration-300
+              <Image
+                src={rankingData.movie.poster || '/api/placeholder/400/600'}
+                alt={rankingData.movie.title}
+                width={64}
+                height={96}
+                className={`w-full h-full object-cover rounded transition-transform duration-300
                           ${expandedMovie === rankingData.movie.identifier ? 'scale-105' : ''}
                           group-hover:scale-105`}
-                />
+              />
               </div>
               
               {/* Movie Info and Stats Button */}

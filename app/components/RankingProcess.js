@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useMovieStore } from '../store/movieStore';
+import Image from 'next/image';
 
 export default function RankingProcess({ onFinish }) {
   const {
@@ -23,9 +24,6 @@ export default function RankingProcess({ onFinish }) {
   const [error, setError] = useState(null);
   const [selectedIndex, setSelectedIndex] = useState(null);
   const [isAnimating, setIsAnimating] = useState(false);
-
-  const moviesRef = useRef(movies);
-  const containerRef = useRef(null);
 
   const calculateUncertainty = useCallback((movieId) => {
     const results = rankings[movieId]?.recentResults;
@@ -366,11 +364,12 @@ export default function RankingProcess({ onFinish }) {
               }`}>
                 {/* Poster Container with fixed aspect ratio */}
                 <div className="absolute inset-0">
-                  {/* Consider replacing with Next.js Image component later */}
-                  <img
+                  <Image
                     src={movie.poster || '/api/placeholder/400/600'}
                     alt={movie.title}
-                    className="w-full h-full object-cover rounded-lg"
+                    fill
+                    sizes="(max-width: 768px) 100vw, 50vw"
+                    className="object-cover rounded-lg"
                     style={{
                       objectPosition: 'center center'
                     }}

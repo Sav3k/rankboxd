@@ -2,11 +2,9 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { XCircle, Link as LinkIcon, ArrowRight } from 'lucide-react';
-import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion'; 
 
 function InputForm({ onSubmit }) {
-  const router = useRouter();
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [validationState, setValidationState] = useState('initial'); // 'initial', 'valid', 'invalid'
@@ -16,7 +14,7 @@ function InputForm({ onSubmit }) {
     try {
       const url = new URL(string);
       return url.protocol === 'http:' || url.protocol === 'https:';
-    } catch (_unused) {
+    } catch (error) {
       return false;
     }
   };
