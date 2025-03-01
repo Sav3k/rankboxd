@@ -1,5 +1,8 @@
 /** @type {import('tailwindcss').Config} */
-module.exports = {
+import daisyui from 'daisyui';
+import daisyuiThemes from 'daisyui/src/theming/themes.js';
+
+export default {
   content: ["./src/**/*.{js,jsx,ts,tsx}"],
   theme: {
     extend: {
@@ -34,11 +37,11 @@ module.exports = {
       },
     },
   },
-  plugins: [require("daisyui")],
+  plugins: [daisyui],
   daisyui: {
     themes: [{
       night: {
-        ...require("daisyui/src/theming/themes")["night"],
+        ...daisyuiThemes["night"],
         "base-100": "#14181c", // Main background
         "base-200": "#1c2228", // Slightly lighter background for cards
         "base-300": "#272d34", // Even lighter for hover states
