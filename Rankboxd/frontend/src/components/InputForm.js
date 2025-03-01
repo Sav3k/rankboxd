@@ -72,7 +72,9 @@ function InputForm({ onSubmit }) {
     setLoading(true);
     setErrorMessage('');
     try {
-      const response = await fetch(`${process.env.REACT_APP_API_URL}/fetch-movies?url=${encodeURIComponent(input)}`);
+      // Vite uses import.meta.env instead of process.env
+      const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+      const response = await fetch(`${apiUrl}/fetch-movies?url=${encodeURIComponent(input)}`);
       const data = await response.json();
   
       if (!response.ok) {
