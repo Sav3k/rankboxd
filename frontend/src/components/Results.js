@@ -235,7 +235,11 @@ const MovieResults = ({ rankings, calculateConfidence }) => {
                       comparisons: rankingData.comparisons || 0,
                       recentResults: rankingData.recentResults || [],
                       confidence: calculateConfidence(rankingData.movie.identifier),
-                      neighborPerformance: calculateNeighborPerformance(sortedMovies, index)
+                      neighborPerformance: calculateNeighborPerformance(sortedMovies, index),
+                      // New Bayesian properties
+                      ratingMean: rankingData.ratingMean || 0,
+                      ratingUncertainty: rankingData.ratingUncertainty || 1,
+                      groupSelections: rankingData.groupSelections || { chosen: 0, appearances: 0 }
                     }}
                   />
                 </motion.div>

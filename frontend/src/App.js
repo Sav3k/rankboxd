@@ -126,7 +126,11 @@ const calculateEnhancedConfidence = (movieId, rankings, allMovies) => {
     1
   ) * 0.8 + 0.2; // Minimum 20% if at least MIN_COMPARISONS
 
-  // 2. Position-Aware Consistency (0-1)
+  // 2. Bayesian Confidence (based on uncertainty)
+  // Lower uncertainty = higher confidence
+  const bayesianConfidence = 1 - Math.min(record.ratingUncertainty, 1);
+
+  // 3. Position-Aware Consistency (0-1)
   const sortedMovies = Object.values(rankings).sort((a, b) => b.rating - a.rating);
   const position = sortedMovies.findIndex(r => r.movie.identifier === movieId);
   const relativePosition = position / sortedMovies.length;
@@ -146,7 +150,7 @@ const calculateEnhancedConfidence = (movieId, rankings, allMovies) => {
   const actualWinRate = record.wins / record.comparisons;
   const consistencyScore = (1 - Math.abs(actualWinRate - expectedWinRate)) * positionWeight;
 
-  // 3. Local Performance (0-1)
+  // 4. Local Performance (0-1)
   const neighbors = sortedMovies
     .slice(
       Math.max(0, position - CONFIDENCE_CONSTANTS.LOCAL_RANGE),
@@ -166,7 +170,13 @@ const calculateEnhancedConfidence = (movieId, rankings, allMovies) => {
       ) / localComparisons.length
     : 0.5;
 
-  // 4. Temporal Confidence (0-1)
+  // 5. Group Selection Confidence
+  // Chosen/appearances ratio is a good indicator of confidence
+  const groupConfidence = record.groupSelections.appearances > 0 
+    ? (record.groupSelections.chosen / record.groupSelections.appearances) 
+    : 0.5;
+
+  // 6. Temporal Confidence (0-1)
   const recentResults = record.recentResults.slice(-5);
   const historicalResults = record.recentResults.slice(0, -5);
   
@@ -186,7 +196,7 @@ const calculateEnhancedConfidence = (movieId, rankings, allMovies) => {
     (recentConsistency * CONFIDENCE_CONSTANTS.RECENT_WEIGHT) +
     (historicalConsistency * CONFIDENCE_CONSTANTS.HISTORICAL_WEIGHT);
 
-  // 5. Transitivity Score (0-1)
+  // 7. Transitivity Score (0-1)
   const transitivityScore = calculateLocalTransitivity(
     movieId, 
     rankings, 
@@ -196,11 +206,13 @@ const calculateEnhancedConfidence = (movieId, rankings, allMovies) => {
 
   // Combine all factors with weights
   const finalConfidence = (
-    comparisonScore * 0.25 +
-    consistencyScore * 0.20 +
-    localConsistencyScore * 0.25 +
+    comparisonScore * 0.15 +
+    bayesianConfidence * 0.20 +
+    consistencyScore * 0.15 +
+    localConsistencyScore * 0.15 +
+    groupConfidence * 0.10 +
     temporalConsistency * 0.15 +
-    transitivityScore * CONFIDENCE_CONSTANTS.TRANSITIVITY_WEIGHT
+    transitivityScore * 0.10
   );
 
   // Ensure minimum confidence of 20% and maximum of 100%
@@ -328,14 +340,29 @@ function App() {
     console.log(`Starting ranking process with ${movieList.length} movies`);
     const initialRankings = movieList.reduce((acc, movie) => {
       acc[movie.identifier] = {
+        // Basic rating properties
         rating: 0,
         movie: movie,
         wins: 0,
         losses: 0,
         comparisons: 0,
+        
+        // Result tracking
         recentResults: [], // Will store objects with opponent and result info
+        
+        // Bayesian properties
+        ratingMean: 0,       // Mean of the rating distribution
+        ratingUncertainty: 1, // Standard deviation/uncertainty of rating
+        
+        // Group selection metrics
+        groupSelections: {
+          chosen: 0,         // Times chosen from a group
+          appearances: 0     // Times appeared in groups
+        },
+        
+        // Confidence metrics
         confidenceScore: 0,
-        uncertainty: 0
+        uncertainty: 1 // Initial high uncertainty
       };
       return acc;
     }, {});
@@ -633,6 +660,7 @@ const processBatchUpdate = useCallback((updates) => {
     updates.forEach(({ winner, loser }) => {
       const learningRate = getDynamicLearningRate(winner, loser);
       
+      // Traditional ELO-style rating update
       const winnerStrength = Math.exp(prevRankings[winner].rating);
       const loserStrength = Math.exp(prevRankings[loser].rating);
       
@@ -643,10 +671,38 @@ const processBatchUpdate = useCallback((updates) => {
       newMomentum[winner] = (newMomentum[winner] || 0) * MOMENTUM_FACTOR + ratingChange;
       newMomentum[loser] = (newMomentum[loser] || 0) * MOMENTUM_FACTOR - ratingChange;
       
+      // Bayesian rating update
+      // Get current uncertainty values
+      const winnerUncertainty = prevRankings[winner].ratingUncertainty;
+      const loserUncertainty = prevRankings[loser].ratingUncertainty;
+      
+      // Calculate observation strength based on group context
+      const isGroupComparison = prevRankings[winner].groupSelections.appearances > 0 || 
+                               prevRankings[loser].groupSelections.appearances > 0;
+      
+      // Group comparisons have lower weight for individual comparisons
+      const observationStrength = isGroupComparison ? 0.8 : 1.0;
+      
+      // Calculate new uncertainties (decrease with each comparison)
+      // More comparisons = lower uncertainty
+      const newWinnerUncertainty = winnerUncertainty * (1 - 0.1 * observationStrength);
+      const newLoserUncertainty = loserUncertainty * (1 - 0.1 * observationStrength);
+      
+      // Calculate Bayesian adjusted rating changes
+      // Higher uncertainty = larger changes
+      const bayesianWinnerChange = ratingChange * (1 + winnerUncertainty) * observationStrength;
+      const bayesianLoserChange = ratingChange * (1 + loserUncertainty) * observationStrength;
+      
       // Update ratings with momentum influence and store opponent info
       newRankings[winner] = {
         ...newRankings[winner],
+        // Traditional rating update
         rating: prevRankings[winner].rating + ratingChange + newMomentum[winner] * MOMENTUM_FACTOR,
+        // Bayesian rating update
+        ratingMean: prevRankings[winner].ratingMean + bayesianWinnerChange,
+        ratingUncertainty: Math.max(0.1, newWinnerUncertainty), // Minimum uncertainty threshold
+        
+        // Update metrics
         wins: prevRankings[winner].wins + 1,
         comparisons: prevRankings[winner].comparisons + 1,
         recentResults: [...prevRankings[winner].recentResults.slice(-9), {
@@ -658,7 +714,13 @@ const processBatchUpdate = useCallback((updates) => {
       
       newRankings[loser] = {
         ...newRankings[loser],
+        // Traditional rating update
         rating: prevRankings[loser].rating - ratingChange + newMomentum[loser] * MOMENTUM_FACTOR,
+        // Bayesian rating update
+        ratingMean: prevRankings[loser].ratingMean - bayesianLoserChange,
+        ratingUncertainty: Math.max(0.1, newLoserUncertainty), // Minimum uncertainty threshold
+        
+        // Update metrics
         losses: prevRankings[loser].losses + 1,
         comparisons: prevRankings[loser].comparisons + 1,
         recentResults: [...prevRankings[loser].recentResults.slice(-9), {
@@ -678,7 +740,7 @@ const processBatchUpdate = useCallback((updates) => {
   checkConvergence();
 }, [getDynamicLearningRate, checkConvergence, movieMomentum]);
 
-const updateRankings = useCallback((winnerIdentifier, loserIdentifier, currentPair) => {
+const updateRankings = useCallback((winnerIdentifier, loserIdentifier, currentGroup) => {
   // Save current state to history
   const currentProgress = comparisons / maxComparisons;
   const currentHighImpact = calculateComparisonImpact(
@@ -692,7 +754,7 @@ const updateRankings = useCallback((winnerIdentifier, loserIdentifier, currentPa
     winner: winnerIdentifier,
     loser: loserIdentifier,
     rankings: { ...rankings },
-    pair: currentPair,
+    pair: currentGroup, // Now this can be a group, not just a pair
     isHighImpact: currentHighImpact
   }]);
 
@@ -714,21 +776,58 @@ const updateRankings = useCallback((winnerIdentifier, loserIdentifier, currentPa
     setIsCurrentComparisonHighImpact(isHighImpact);
   }
 
-    // Add to pending updates and process if optimal batch size reached
-    setPendingUpdates(prev => {
-      const newPending = [...prev, { winner: winnerIdentifier, loser: loserIdentifier }];
-      const optimalBatchSize = calculateOptimalBatchSize();
+  // Update group selection metrics
+  setRankings(prevRankings => {
+    const newRankings = { ...prevRankings };
+    
+    // Identify if this was a group selection
+    const isGroupSelection = currentGroup.length > 2;
+    
+    if (isGroupSelection) {
+      // Update appearance counts for all movies in the group
+      currentGroup.forEach(movie => {
+        const id = movie.identifier;
+        if (newRankings[id]) {
+          newRankings[id] = {
+            ...newRankings[id],
+            groupSelections: {
+              ...newRankings[id].groupSelections,
+              appearances: newRankings[id].groupSelections.appearances + 1
+            }
+          };
+        }
+      });
       
-      if (newPending.length >= optimalBatchSize) {
-        console.log(`Processing batch of size ${optimalBatchSize}`);
-        processBatchUpdate(newPending);
-        return [];
+      // Update chosen count for winner
+      if (newRankings[winnerIdentifier]) {
+        newRankings[winnerIdentifier] = {
+          ...newRankings[winnerIdentifier],
+          groupSelections: {
+            ...newRankings[winnerIdentifier].groupSelections,
+            chosen: newRankings[winnerIdentifier].groupSelections.chosen + 1
+          }
+        };
       }
-      return newPending;
-    });
+    }
+    
+    return newRankings;
+  });
 
-    setComparisons(prev => prev + 1);
-  }, [rankings, processBatchUpdate, calculateOptimalBatchSize, comparisons, maxComparisons]);
+  // Add to pending updates and process if optimal batch size reached
+  setPendingUpdates(prev => {
+    const newPending = [...prev, { winner: winnerIdentifier, loser: loserIdentifier }];
+    const optimalBatchSize = calculateOptimalBatchSize();
+    
+    if (newPending.length >= optimalBatchSize) {
+      console.log(`Processing batch of size ${optimalBatchSize}`);
+      processBatchUpdate(newPending);
+      return [];
+    }
+    return newPending;
+  });
+
+  setComparisons(prev => prev + 1);
+}, [rankings, processBatchUpdate, calculateOptimalBatchSize, comparisons, maxComparisons]);
 
   useEffect(() => {
     if (step === 'results' && pendingUpdates.length > 0) {
