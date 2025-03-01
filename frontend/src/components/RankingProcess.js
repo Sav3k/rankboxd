@@ -22,6 +22,7 @@ function RankingProcess({
 
   const moviesRef = useRef(movies);
   const containerRef = useRef(null);
+  const timeoutRef = useRef(null);
 
   // Function to determine the current phase based on progress
   const determinePhase = useCallback(() => {
@@ -72,12 +73,12 @@ function RankingProcess({
 
   const calculateGroupValue = useCallback((movies, rankings) => {
     let totalValue = 0;
+    let individualSum = 0;
     
-    // Calculate individual movie values
-    const movieValues = movies.map(movie => ({
-      movie,
-      value: calculateMovieValue(movie, rankings, moviesUsed)
-    }));
+    // Calculate individual movie values without creating objects
+    for (let i = 0; i < movies.length; i++) {
+      individualSum += calculateMovieValue(movies[i], rankings, moviesUsed);
+    }
     
     // Calculate value from pairwise relationships
     for (let i = 0; i < movies.length - 1; i++) {
@@ -98,10 +99,16 @@ function RankingProcess({
     }
     
     // Combine individual values and pairwise relationships
-    return totalValue + movieValues.reduce((sum, item) => sum + item.value, 0);
+    return totalValue + individualSum;
   }, [calculateMovieValue, moviesUsed]);
 
+  // Properly memoize movies
   const memoizedMovies = useMemo(() => moviesRef.current, []);
+  
+  // Memoize available movies separately
+  const availableMoviesCache = useMemo(() => {
+    return memoizedMovies.filter(movie => !moviesUsed.has(movie.identifier));
+  }, [memoizedMovies, moviesUsed, moviesUsed.size]);
   
   const selectGroup = useCallback(() => {
     try {
@@ -112,9 +119,7 @@ function RankingProcess({
       }
   
       // Get available movies, refreshing the pool if needed
-      let availableMovies = memoizedMovies.filter(movie => 
-        !moviesUsed.has(movie.identifier)
-      );
+      let availableMovies = availableMoviesCache;
   
       if (availableMovies.length < groupSize) {
         console.log("Resetting movies used pool");
@@ -138,11 +143,30 @@ function RankingProcess({
         
         // Find best matching second movie
         const otherMovies = sortedByComparisons.slice(1, 10); // Limit to 10 candidates for efficiency
-        const secondMovie = otherMovies.reduce((best, current) => {
+        
+        // Check for recently compared pairs and avoid repeating them
+        let recentPairs = new Set();
+        
+        // Extract recent pairs from movie rankings data
+        if (firstMovie.identifier && rankings[firstMovie.identifier].recentResults) {
+          rankings[firstMovie.identifier].recentResults.forEach(result => {
+            recentPairs.add(result.against);
+          });
+        }
+        
+        // Filter out recently compared pairs
+        const filteredOtherMovies = otherMovies.filter(movie => 
+          !recentPairs.has(movie.identifier)
+        );
+        
+        // If we have filtered movies use those, otherwise fall back to all other movies
+        const candidateMovies = filteredOtherMovies.length > 0 ? filteredOtherMovies : otherMovies;
+        
+        const secondMovie = candidateMovies.reduce((best, current) => {
           const currentValue = calculateMovieValue(current, rankings, moviesUsed);
           const bestValue = best ? calculateMovieValue(best, rankings, moviesUsed) : -1;
           return currentValue > bestValue ? current : best;
-        });
+        }, null);
   
         selectedGroup = [firstMovie, secondMovie];
       } else {
@@ -152,9 +176,28 @@ function RankingProcess({
         const strategies = [
           // Strategy 1: Mix of high uncertainty movies across rating spectrum
           () => {
-            const sortedByUncertainty = [...availableMovies].sort((a, b) => 
+            // Get movies sorted by uncertainty but filter out recently compared pairs
+            const topMovie = [...availableMovies].sort((a, b) => 
               calculateUncertainty(b.identifier) - calculateUncertainty(a.identifier)
+            )[0];
+            
+            // Get set of recently compared movies for the top uncertain movie
+            const recentlyCompared = new Set();
+            if (topMovie && rankings[topMovie.identifier].recentResults) {
+              rankings[topMovie.identifier].recentResults.forEach(result => {
+                recentlyCompared.add(result.against);
+              });
+            }
+            
+            // Filter the remaining movies to exclude recently compared pairs
+            const remainingMovies = [...availableMovies].filter(movie => 
+              movie.identifier !== topMovie.identifier && 
+              !recentlyCompared.has(movie.identifier)
             );
+            
+            const sortedByUncertainty = [topMovie, ...remainingMovies.sort((a, b) => 
+              calculateUncertainty(b.identifier) - calculateUncertainty(a.identifier)
+            )];
             
             // Take top uncertain movies, but ensure rating diversity
             const selectedMovies = [sortedByUncertainty[0]];
@@ -190,11 +233,36 @@ function RankingProcess({
             return selectedMovies;
           },
           
-          // Strategy 2: Prioritize movies with few comparisons
+          // Strategy 2: Prioritize movies with few comparisons while avoiding recent pairs
           () => {
-            return [...availableMovies]
-              .sort((a, b) => rankings[a.identifier].comparisons - rankings[b.identifier].comparisons)
-              .slice(0, currentPhase.size);
+            // Sort by fewest comparisons
+            const sortedByComparisons = [...availableMovies]
+              .sort((a, b) => rankings[a.identifier].comparisons - rankings[b.identifier].comparisons);
+              
+            if (sortedByComparisons.length === 0) return [];
+            
+            // Get the first movie
+            const firstMovie = sortedByComparisons[0];
+            
+            // Get recently compared movies for the first movie
+            const recentlyCompared = new Set();
+            if (rankings[firstMovie.identifier].recentResults) {
+              rankings[firstMovie.identifier].recentResults.forEach(result => {
+                recentlyCompared.add(result.against);
+              });
+            }
+            
+            // Filter remaining movies to avoid recent pairs
+            const remainingCandidates = sortedByComparisons.slice(1).filter(movie => 
+              !recentlyCompared.has(movie.identifier)
+            );
+            
+            // Use filtered candidates if available, otherwise fall back to original sorted list
+            const candidates = remainingCandidates.length > 0 ? 
+              remainingCandidates : 
+              sortedByComparisons.slice(1);
+            
+            return [firstMovie, ...candidates.slice(0, currentPhase.size - 1)];
           },
           
           // Strategy 3: Create groups with similar ratings to refine precision
@@ -204,14 +272,29 @@ function RankingProcess({
             const anchorMovie = availableMovies[randomIndex];
             const anchorRating = rankings[anchorMovie.identifier].rating;
             
-            // Find movies with similar ratings
-            return [anchorMovie, ...availableMovies
+            // Get recently compared movies for this anchor
+            const recentlyCompared = new Set();
+            if (rankings[anchorMovie.identifier].recentResults) {
+              rankings[anchorMovie.identifier].recentResults.forEach(result => {
+                recentlyCompared.add(result.against);
+              });
+            }
+            
+            // Find movies with similar ratings but prioritize those not recently compared
+            const candidates = availableMovies
               .filter(m => m.identifier !== anchorMovie.identifier)
-              .sort((a, b) => 
-                Math.abs(rankings[a.identifier].rating - anchorRating) - 
-                Math.abs(rankings[b.identifier].rating - anchorRating)
-              )
-              .slice(0, currentPhase.size - 1)];
+              .sort((a, b) => {
+                // First prioritize movies that haven't been recently compared
+                const aRecent = recentlyCompared.has(a.identifier) ? 1 : 0;
+                const bRecent = recentlyCompared.has(b.identifier) ? 1 : 0;
+                if (aRecent !== bRecent) return aRecent - bRecent;
+                
+                // Then sort by rating similarity
+                return Math.abs(rankings[a.identifier].rating - anchorRating) - 
+                       Math.abs(rankings[b.identifier].rating - anchorRating);
+              });
+              
+            return [anchorMovie, ...candidates.slice(0, currentPhase.size - 1)];
           }
         ];
         
@@ -244,9 +327,10 @@ function RankingProcess({
       // Mark movies as used
       setCurrentGroup(selectedGroup);
       setMoviesUsed(prev => {
-        const newUsed = new Set([...prev]);
-        selectedGroup.forEach(movie => newUsed.add(movie.identifier));
-        return newUsed;
+        // Create a new Set to ensure React detects the state change
+        const newSet = new Set(prev);
+        selectedGroup.forEach(movie => newSet.add(movie.identifier));
+        return newSet;
       });
   
     } catch (err) {
@@ -263,7 +347,8 @@ function RankingProcess({
     calculateMovieValue,
     calculateGroupValue,
     determinePhase,
-    memoizedMovies
+    memoizedMovies,
+    availableMoviesCache
   ]);
 
   const handlePairChoice = useCallback((winner, loser) => {
@@ -311,9 +396,52 @@ function RankingProcess({
       selectGroup();
     }
   }, [currentGroup.length, comparisons, maxComparisons, selectGroup]);
+  
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+    };
+  }, []);
 
+  // Make sure to declare all hooks before any conditionals
+  const handlePairSelect = useCallback((index) => {
+    if (isAnimating || !currentGroup[index]) return;
+    
+    setIsAnimating(true);
+    setSelectedIndex(index);
+    
+    // Clear any existing timeout to prevent memory leaks
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+    }
+    
+    timeoutRef.current = setTimeout(() => {
+      handlePairChoice(currentGroup[index], currentGroup[1 - index]);
+      setSelectedIndex(null);
+      setIsAnimating(false);
+      timeoutRef.current = null;
+    }, 150);
+  }, [isAnimating, currentGroup, handlePairChoice]);
+
+  // Run finisher effect if needed inside render, before return
+  useEffect(() => {
+    if (comparisons >= maxComparisons) {
+      onFinish();
+    }
+  }, [comparisons, maxComparisons, onFinish]);
+  
+  // Early return null is a common pattern and safe since it's above
+  if (comparisons >= maxComparisons) {
+    return null;
+  }
+
+  // Render appropriate UI based on state
+  let content;
   if (error) {
-    return (
+    content = (
       <div className="flex items-center justify-center min-h-[50vh]">
         <div className="card bg-base-200 p-6 shadow-lg">
           <h3 className="text-lg font-semibold text-error mb-2">Error</h3>
@@ -321,105 +449,91 @@ function RankingProcess({
         </div>
       </div>
     );
-  }
+  } else if (currentMode === 'pair' && currentGroup.length === 2) {
+    content = (
+      <div className="mx-auto px-4 py-8 flex flex-col justify-center items-center min-h-[70vh]" style={{ maxWidth: "min(100%, 30rem)" }}>
+        <div className="text-center mb-6 md:mb-8">
+          <h2 className="text-2xl font-bold relative inline-flex items-center gap-2">
+            {isHighImpact && (
+              <div className="relative w-2 h-2 absolute -left-6">
+                <div className="w-2 h-2 rounded-full bg-amber-500/20" />
+                <div className="absolute inset-0 w-2 h-2 rounded-full bg-amber-500 animate-ping" />
+                <div className="absolute inset-0 w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+                <div className="absolute inset-0 w-8 h-8 -m-3 bg-amber-500/20 blur-lg rounded-full" />
+              </div>
+            )}
+            Which movie do you prefer?
+          </h2>
+        </div>
 
-  if (comparisons >= maxComparisons) {
-    onFinish();
-    return null;
-  }
-
-  const handlePairSelect = (index) => {
-    if (isAnimating || !currentGroup[index]) return;
-    
-    setIsAnimating(true);
-    setSelectedIndex(index);
-    
-    setTimeout(() => {
-      handlePairChoice(currentGroup[index], currentGroup[1 - index]);
-      setSelectedIndex(null);
-      setIsAnimating(false);
-    }, 150);
-  };
-
-  return (
-    <div className="container mx-auto px-4 py-8 max-w-6xl relative" ref={containerRef}>
-      {/* Main content */}
-      <div className="max-w-6xl mx-auto relative">
-        {currentMode === 'pair' && currentGroup.length === 2 ? (
-          <div className="max-w-2xl mx-auto px-4">
-            <div className="text-center mb-8 flex justify-center">
-              <h2 className="text-2xl font-bold relative inline-flex items-center gap-2">
-                {isHighImpact && (
-                  <div className="relative w-2 h-2 absolute -left-6">
-                    <div className="w-2 h-2 rounded-full bg-amber-500/20" />
-                    <div className="absolute inset-0 w-2 h-2 rounded-full bg-amber-500 animate-ping" />
-                    <div className="absolute inset-0 w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
-                    <div className="absolute inset-0 w-8 h-8 -m-3 bg-amber-500/20 blur-lg rounded-full" />
+        <div className="grid grid-cols-2 gap-4 md:gap-6 w-full [&:hover_button]:opacity-30">
+          {currentGroup.map((movie, index) => (
+            <div className="relative" key={movie.identifier}>
+              <button
+                onClick={() => handlePairSelect(index)}
+                className={[
+                  'group relative overflow-hidden rounded-lg w-full',
+                  'transition-all ease-in-out duration-300',
+                  selectedIndex === index ? 'scale-[0.98]' : 'hover:scale-[1.02]',
+                  'animate-[fadeIn_0.5s_ease-in-out_forwards]'
+                ].join(' ')}
+                disabled={isAnimating}
+              >
+                <div className="relative aspect-[2/3] w-full">
+                  {/* Poster Container with fixed aspect ratio */}
+                  <div className="absolute inset-0">
+                    <img
+                      src={movie.poster || '/api/placeholder/400/600'}
+                      alt={movie.title}
+                      className="w-full h-full object-cover rounded-lg"
+                      style={{
+                        objectPosition: 'center center'
+                      }}
+                    />
                   </div>
-                )}
-                Which movie do you prefer?
-              </h2>
-            </div>
-
-            <div className="grid grid-cols-2 gap-[5%] [&:hover_button]:opacity-30">
-              {currentGroup.map((movie, index) => (
-                <div className="relative" key={movie.identifier}>
-                  <button
-                    onClick={() => handlePairSelect(index)}
-                    className={[
-                      'group relative overflow-hidden rounded-lg w-full',
-                      'transition-all ease-in-out duration-300',
-                      selectedIndex === index ? 'scale-[0.98]' : 'hover:scale-[1.02]',
-                      'animate-[fadeIn_0.5s_ease-in-out_forwards]'
-                    ].join(' ')}
-                    disabled={isAnimating}
-                  >
-                    <div className={`relative aspect-[2/3] w-[90%] ${
-                      index === 0 ? 'ml-auto' : 'mr-auto'
-                    }`}>
-                      {/* Poster Container with fixed aspect ratio */}
-                      <div className="absolute inset-0">
-                        <img
-                          src={movie.poster || '/api/placeholder/400/600'}
-                          alt={movie.title}
-                          className="w-full h-full object-cover rounded-lg"
-                          style={{
-                            objectPosition: 'center center'
-                          }}
-                        />
-                      </div>
-                      
-                      {/* Gradient Overlay */}
-                      <div className="absolute inset-0 bg-gradient-to-t from-black via-black/50 to-transparent rounded-lg opacity-90" />
-                      
-                      {/* Text Container */}
-                      <div className="absolute bottom-0 left-0 right-0 p-6 z-10">
-                        <h3 className="text-xl font-bold mb-2 text-white truncate" title={movie.title}>
-                          {movie.title}
-                        </h3>
-                        <p className="text-white/90">{movie.year}</p>
-                      </div>
-                    </div>
-                  </button>
+                  
+                  {/* Gradient Overlay */}
+                  <div className="absolute inset-0 bg-gradient-to-t from-black via-black/50 to-transparent rounded-lg opacity-90" />
+                  
+                  {/* Text Container */}
+                  <div className="absolute bottom-0 left-0 right-0 p-2 md:p-4 z-10">
+                    <h3 className="text-sm md:text-lg font-bold mb-0 md:mb-1 text-white truncate" title={movie.title}>
+                      {movie.title}
+                    </h3>
+                    <p className="text-white/90 text-xs md:text-sm">{movie.year}</p>
+                  </div>
                 </div>
-              ))}
+              </button>
             </div>
-          </div>
-        ) : currentMode === 'group' && currentGroup.length >= 3 ? (
-          <GroupSelection 
-            movies={currentGroup} 
-            groupSize={groupSize}
-            onSelect={handleGroupChoice}
-            isHighImpact={isHighImpact}
-          />
-        ) : (
-          <div className="flex justify-center items-center h-[60vh]">
-            <div className="loading loading-spinner loading-lg text-primary"></div>
-          </div>
-        )}
+          ))}
+        </div>
+      </div>
+    );
+  } else if (currentMode === 'group' && currentGroup.length >= 3) {
+    content = (
+      <GroupSelection 
+        movies={currentGroup} 
+        groupSize={groupSize}
+        onSelect={handleGroupChoice}
+        isHighImpact={isHighImpact}
+      />
+    );
+  } else {
+    content = (
+      <div className="flex justify-center items-center h-[70vh]">
+        <div className="loading loading-spinner loading-lg text-primary"></div>
+      </div>
+    );
+  }
+  
+  return (
+    <div className="container mx-auto px-4 py-4 max-w-6xl relative flex flex-col justify-center min-h-[80vh]" ref={containerRef}>
+      {/* Main content */}
+      <div className="mx-auto relative w-full">
+        {content}
         
         {/* Undo button section */}
-        <div className="text-center mt-8">
+        <div className="text-center mt-6 md:mt-8 mb-4">
           <button 
             onClick={() => {
               const previousGroup = onUndo();

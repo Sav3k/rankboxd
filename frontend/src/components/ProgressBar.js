@@ -38,13 +38,8 @@ const ProgressBar = ({ currentStep }) => {
           ))}
         </div>
       </div>
-
-      <style jsx>{`
-        @keyframes fadeIn {
-          from { opacity: 0; }
-          to { opacity: 1; }
-        }
-      `}</style>
+      
+      {/* Animation is defined in TailwindCSS or globals.css */}
     </div>
   );
 };

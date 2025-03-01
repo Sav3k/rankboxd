@@ -2,14 +2,14 @@ import React, { useMemo } from 'react';
 import { Timer, Zap, Target } from 'lucide-react';
 
 const RANKING_CONSTANTS = {
-  QUICK_MULTIPLIER: 1.5,
-  BALANCED_MULTIPLIER: 3,
-  THOROUGH_MULTIPLIER: 5,
-  MIN_QUICK_COMPARISONS: 20,
-  MIN_BALANCED_COMPARISONS: 30,
-  MIN_THOROUGH_COMPARISONS: 40,
-  MAX_BALANCED_COMPARISONS: 1500,
-  MAX_THOROUGH_COMPARISONS: 2000
+  QUICK_MULTIPLIER: 2,
+  BALANCED_MULTIPLIER: 3.5,
+  THOROUGH_MULTIPLIER: 6,
+  MIN_QUICK_COMPARISONS: 25,
+  MIN_BALANCED_COMPARISONS: 45,
+  MIN_THOROUGH_COMPARISONS: 60,
+  MAX_BALANCED_COMPARISONS: 2000,
+  MAX_THOROUGH_COMPARISONS: 3000
 };
 
 const ModeOption = ({ title, description, comparisons, time, icon: Icon, onClick }) => (
@@ -43,7 +43,14 @@ const ModeOption = ({ title, description, comparisons, time, icon: Icon, onClick
 );
 
 const ModeSelection = ({ movies, onModeSelect }) => {
-  const getEstimatedTime = (comparisons) => Math.ceil(comparisons * 0.1);
+  const getEstimatedTime = (comparisons) => {
+    // More realistic time estimation based on comparison count
+    // Quick mode: ~5 sec per comparison
+    // More comparisons generally get faster as users develop preferences
+    const baseTime = comparisons * 0.08;  // Base time in minutes
+    // Apply logarithmic scaling for more accurate estimates
+    return Math.ceil(baseTime * (1 - Math.log10(comparisons) / 20));
+  };
 
   const modeOptions = useMemo(() => {
     const calculateOptions = (movieCount) => {

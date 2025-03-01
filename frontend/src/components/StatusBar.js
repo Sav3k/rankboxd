@@ -2,13 +2,14 @@ import React, { useMemo } from 'react';
 import { Timer, Zap, Target, Info } from 'lucide-react';
 
 const getPhaseInfo = (progress) => {
-  if (progress < 0.3) {
+  // Updated to match phase transitions in RankingProcess.js
+  if (progress < 0.35) {
     return {
       message: "Initial sorting...",
       icon: Zap,
       color: "text-primary/70"
     };
-  } else if (progress < 0.7) {
+  } else if (progress < 0.75) {
     return {
       message: "Refining rankings...",
       icon: Target,
@@ -28,10 +29,19 @@ const StatusBar = ({
   maxComparisons,
   avgConfidence,
   stabilityScore,
-  estimatedMinutesLeft
+  estimatedMinutesLeft,
+  learningRate
 }) => {
   const progress = comparisons / maxComparisons;
   const phase = useMemo(() => getPhaseInfo(progress), [progress]);
+  
+  // Learning rate visualization - for adaptive learning rate feature
+  const normalizedLearningRate = useMemo(() => {
+    if (!learningRate) return 0.5; // Default if not provided
+    const min = 0.01;
+    const max = 0.2;
+    return Math.min(1, Math.max(0, (learningRate - min) / (max - min)));
+  }, [learningRate]);
   
   return (
     <div className="mt-8 mb-8 flex justify-center">
@@ -63,6 +73,20 @@ const StatusBar = ({
                     <div className="text-xs text-base-content/70">Time Remaining</div>
                     <div className="font-medium">~{estimatedMinutesLeft} min</div>
                   </div>
+                  {learningRate && (
+                    <div>
+                      <div className="text-xs text-base-content/70">Learning Rate</div>
+                      <div className="font-medium flex items-center gap-1">
+                        {learningRate.toFixed(3)}
+                        <div className="w-8 h-2 bg-base-100 rounded-full">
+                          <div 
+                            className="h-full rounded-full bg-primary/70" 
+                            style={{ width: `${normalizedLearningRate * 100}%` }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <div className="absolute left-1/2 bottom-0 -translate-x-1/2 translate-y-1/2 rotate-45 w-2 h-2 bg-base-300" />
               </div>

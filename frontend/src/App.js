@@ -263,6 +263,7 @@ function App() {
   const [comparisonHistory, setComparisonHistory] = useState([]);
   const [movieMomentum, setMovieMomentum] = useState({});
   const [isCurrentComparisonHighImpact, setIsCurrentComparisonHighImpact] = useState(false);
+  const [currentLearningRate, setCurrentLearningRate] = useState(0.1);
 
   const CONVERGENCE_CHECK_WINDOW = 10;
   const BASE_LEARNING_RATE = 0.1;
@@ -274,6 +275,20 @@ function App() {
   const MOMENTUM_FACTOR = 0.9;
   const MIN_LEARNING_RATE = 0.01;
   const MAX_LEARNING_RATE = 0.2;
+  
+  // Learning rate adaptation parameters
+  const LEARNING_RATE_PARAMS = {
+    ADAPTATION_WINDOW: 15,         // Window size for adaptation calculation
+    BASE_RATE: 0.1,                // Starting learning rate
+    ADAPTIVE_FACTOR: 0.75,         // How much to rely on adaptation vs base rate
+    CONSISTENCY_SCALING: 1.5,      // Scaling for consistent results
+    INCONSISTENCY_SCALING: 0.6,    // Scaling for inconsistent results
+    PROGRESS_DECAY: 0.5,           // Rate at which learning rate naturally decays with progress
+    SURPRISE_BOOST: 1.5,           // Increase for surprising results
+    EXPECTED_RESULT_DAMPING: 0.7,  // Decrease for expected results
+    EARLY_PHASE_BOOST: 1.2,        // Higher learning rate in early phases
+    LATE_PHASE_DAMPING: 0.8        // Lower learning rate in later phases
+  };
 
   const EARLY_TERMINATION = {
     MIN_PROGRESS: 0.4, // Don't terminate before 40% completion
@@ -427,21 +442,121 @@ function App() {
     return false;
   }, [rankings]);
 
+  const calculateAdaptiveLearningRate = useCallback((winner, loser) => {
+    // Get recent results for both movies
+    const winnerResults = rankings[winner].recentResults || [];
+    const loserResults = rankings[loser].recentResults || [];
+    
+    // Calculate consistency scores - higher is more consistent pattern
+    const calculateConsistency = (results) => {
+      if (results.length < 2) return 0.5; // Default for too few results
+      
+      let flips = 0;
+      for (let i = 1; i < results.length; i++) {
+        if (results[i].result !== results[i-1].result) flips++;
+      }
+      
+      // Return consistency (1 = perfectly consistent, 0 = alternating results)
+      return 1 - (flips / (results.length - 1));
+    };
+    
+    const winnerConsistency = calculateConsistency(winnerResults);
+    const loserConsistency = calculateConsistency(loserResults);
+    const avgConsistency = (winnerConsistency + loserConsistency) / 2;
+    
+    // Check if most recent results match expectations based on ratings
+    const expectedWinnerWins = rankings[winner].rating > rankings[loser].rating;
+    let recentResultsMatchExpectations = true;
+    
+    if (winnerResults.length > 0) {
+      const recentWinnerResult = winnerResults[winnerResults.length - 1];
+      if (recentWinnerResult && recentWinnerResult.opponent) {
+        const opponentRating = rankings[recentWinnerResult.opponent]?.rating || 0;
+        const expectedResult = rankings[winner].rating > opponentRating ? 1 : 0;
+        if (recentWinnerResult.result !== expectedResult) {
+          recentResultsMatchExpectations = false;
+        }
+      }
+    }
+    
+    if (loserResults.length > 0) {
+      const recentLoserResult = loserResults[loserResults.length - 1];
+      if (recentLoserResult && recentLoserResult.opponent) {
+        const opponentRating = rankings[recentLoserResult.opponent]?.rating || 0;
+        const expectedResult = rankings[loser].rating > opponentRating ? 1 : 0;
+        if (recentLoserResult.result !== expectedResult) {
+          recentResultsMatchExpectations = false;
+        }
+      }
+    }
+    
+    // Calculate adaptation factor based on volatility
+    const calculateVolatilityFromChanges = () => {
+      if (recentChanges.length < LEARNING_RATE_PARAMS.ADAPTATION_WINDOW) {
+        return 1; // Default factor if not enough history
+      }
+      
+      // Calculate average magnitude of recent changes
+      const avgChange = recentChanges
+        .slice(-LEARNING_RATE_PARAMS.ADAPTATION_WINDOW)
+        .reduce((sum, change) => sum + Math.abs(change), 0) / 
+        LEARNING_RATE_PARAMS.ADAPTATION_WINDOW;
+      
+      // Normalize against a typical change of 0.1
+      const normalizedVolatility = avgChange / 0.1;
+      
+      // Log scale for smoother changes
+      return Math.max(0.5, Math.min(1.5, Math.log(normalizedVolatility + 1)));
+    };
+    
+    // Return the adaptive learning rate factor
+    const volatilityFactor = calculateVolatilityFromChanges();
+    
+    // Higher consistency should lead to higher learning rate to reinforce patterns
+    const consistencyFactor = avgConsistency > 0.7 ? 
+      LEARNING_RATE_PARAMS.CONSISTENCY_SCALING : 
+      LEARNING_RATE_PARAMS.INCONSISTENCY_SCALING;
+    
+    // Surprise factor - if result matches expectations, lower rate
+    const surpriseFactor = recentResultsMatchExpectations ? 
+      LEARNING_RATE_PARAMS.EXPECTED_RESULT_DAMPING : 
+      LEARNING_RATE_PARAMS.SURPRISE_BOOST;
+    
+    return {
+      volatilityFactor,
+      consistencyFactor,
+      surpriseFactor
+    };
+  }, [rankings, recentChanges]);
+
   const getDynamicLearningRate = useCallback((winner, loser) => {
     const progress = comparisons / maxComparisons;
     const ratingDiff = Math.abs(rankings[winner].rating - rankings[loser].rating);
     const winnerConfidence = calculateConfidence(winner);
     const loserConfidence = calculateConfidence(loser);
     
-    // Start with base learning rate
-    let learningRate = BASE_LEARNING_RATE;
+    // Get adaptive factors
+    const { 
+      volatilityFactor, 
+      consistencyFactor, 
+      surpriseFactor 
+    } = calculateAdaptiveLearningRate(winner, loser);
     
-    // Adjust based on progress
-    learningRate *= (1 - progress * 0.5);
+    // Start with base learning rate
+    let learningRate = LEARNING_RATE_PARAMS.BASE_RATE;
+    
+    // Adjust based on progress - apply more sophisticated decay
+    const progressFactor = progress < 0.3 ? 
+      LEARNING_RATE_PARAMS.EARLY_PHASE_BOOST : 
+      progress > 0.7 ? 
+        LEARNING_RATE_PARAMS.LATE_PHASE_DAMPING : 
+        1.0;
+    
+    learningRate *= (1 - progress * LEARNING_RATE_PARAMS.PROGRESS_DECAY) * progressFactor;
     
     // Adjust for rating difference
-    const surpriseFactor = 1 / (1 + Math.exp(-5 * (1 - ratingDiff)));
-    learningRate *= (1 + surpriseFactor);
+    const surpriseValueFactor = 1 / (1 + Math.exp(-5 * (1 - ratingDiff)));
+    learningRate *= (1 + surpriseValueFactor);
     
     // Confidence adjustment
     const confidenceFactor = 1 - (winnerConfidence + loserConfidence) / 4;
@@ -458,9 +573,20 @@ function App() {
     const avgMomentum = (Math.abs(winnerMomentum) + Math.abs(loserMomentum)) / 2;
     learningRate *= (1 + avgMomentum * MOMENTUM_FACTOR);
     
+    // Apply adaptive factors from learning rate adaptation
+    learningRate *= volatilityFactor * consistencyFactor * surpriseFactor;
+    
     // Clamp learning rate
     return Math.max(MIN_LEARNING_RATE, Math.min(MAX_LEARNING_RATE, learningRate));
-  }, [comparisons, maxComparisons, rankings, checkTransitivityViolation, calculateConfidence, movieMomentum]);
+  }, [
+    comparisons, 
+    maxComparisons, 
+    rankings, 
+    checkTransitivityViolation, 
+    calculateConfidence, 
+    movieMomentum,
+    calculateAdaptiveLearningRate
+  ]);
   
   const calculateOptimalBatchSize = useCallback(() => {
     const movieCount = movies.length;
@@ -660,6 +786,15 @@ const processBatchUpdate = useCallback((updates) => {
     updates.forEach(({ winner, loser }) => {
       const learningRate = getDynamicLearningRate(winner, loser);
       
+      // Store the current learning rate for UI display
+      setCurrentLearningRate(learningRate);
+      
+      // Get the adaptive factors for fine-tuning the updates
+      const { 
+        volatilityFactor, 
+        consistencyFactor 
+      } = calculateAdaptiveLearningRate(winner, loser);
+      
       // Traditional ELO-style rating update
       const winnerStrength = Math.exp(prevRankings[winner].rating);
       const loserStrength = Math.exp(prevRankings[loser].rating);
@@ -667,31 +802,50 @@ const processBatchUpdate = useCallback((updates) => {
       const expectedProbWinner = winnerStrength / (winnerStrength + loserStrength);
       const ratingChange = learningRate * (1 - expectedProbWinner);
       
-      // Update momentum
-      newMomentum[winner] = (newMomentum[winner] || 0) * MOMENTUM_FACTOR + ratingChange;
-      newMomentum[loser] = (newMomentum[loser] || 0) * MOMENTUM_FACTOR - ratingChange;
+      // Update momentum with adaptive scaling
+      const momentumScaling = volatilityFactor * consistencyFactor;
+      newMomentum[winner] = (newMomentum[winner] || 0) * MOMENTUM_FACTOR + ratingChange * momentumScaling;
+      newMomentum[loser] = (newMomentum[loser] || 0) * MOMENTUM_FACTOR - ratingChange * momentumScaling;
       
       // Bayesian rating update
       // Get current uncertainty values
       const winnerUncertainty = prevRankings[winner].ratingUncertainty;
       const loserUncertainty = prevRankings[loser].ratingUncertainty;
       
-      // Calculate observation strength based on group context
+      // Calculate observation strength based on group context and consistency
       const isGroupComparison = prevRankings[winner].groupSelections.appearances > 0 || 
                                prevRankings[loser].groupSelections.appearances > 0;
       
-      // Group comparisons have lower weight for individual comparisons
-      const observationStrength = isGroupComparison ? 0.8 : 1.0;
+      // Adjust observation strength based on group context and adaptive factors
+      const baseObservationStrength = isGroupComparison ? 0.8 : 1.0;
+      const adaptiveObservationStrength = baseObservationStrength * volatilityFactor;
       
-      // Calculate new uncertainties (decrease with each comparison)
-      // More comparisons = lower uncertainty
-      const newWinnerUncertainty = winnerUncertainty * (1 - 0.1 * observationStrength);
-      const newLoserUncertainty = loserUncertainty * (1 - 0.1 * observationStrength);
+      // Adaptively adjust uncertainty reduction rate based on progress and consistency
+      const progress = comparisons / maxComparisons;
+      const uncertaintyReductionRate = 0.1 * (
+        progress < 0.3 ? 0.8 : // Slower reduction early on
+        progress > 0.7 ? 1.2 : // Faster reduction late in the process
+        1.0
+      ) * consistencyFactor;  // More consistent results lead to faster reduction
       
-      // Calculate Bayesian adjusted rating changes
-      // Higher uncertainty = larger changes
-      const bayesianWinnerChange = ratingChange * (1 + winnerUncertainty) * observationStrength;
-      const bayesianLoserChange = ratingChange * (1 + loserUncertainty) * observationStrength;
+      // Calculate new uncertainties with adaptive reduction
+      const newWinnerUncertainty = winnerUncertainty * (1 - uncertaintyReductionRate * adaptiveObservationStrength);
+      const newLoserUncertainty = loserUncertainty * (1 - uncertaintyReductionRate * adaptiveObservationStrength);
+      
+      // Calculate Bayesian adjusted rating changes with adaptive scaling
+      const bayesianWinnerChange = ratingChange * (1 + winnerUncertainty) * adaptiveObservationStrength;
+      const bayesianLoserChange = ratingChange * (1 + loserUncertainty) * adaptiveObservationStrength;
+      
+      // Log the learning rate and adaptive factors for debugging
+      if (Math.random() < 0.05) { // Only log occasionally (5% of updates)
+        console.log(`Learning rate adaptation for ${winner} vs ${loser}:`, {
+          learningRate: learningRate.toFixed(4),
+          volatility: volatilityFactor.toFixed(2),
+          consistency: consistencyFactor.toFixed(2),
+          observationStrength: adaptiveObservationStrength.toFixed(2),
+          uncertaintyReduction: uncertaintyReductionRate.toFixed(2)
+        });
+      }
       
       // Update ratings with momentum influence and store opponent info
       newRankings[winner] = {
@@ -708,7 +862,8 @@ const processBatchUpdate = useCallback((updates) => {
         recentResults: [...prevRankings[winner].recentResults.slice(-9), {
           opponent: loser,
           result: 1,
-          ratingDiff: Math.abs(prevRankings[winner].rating - prevRankings[loser].rating)
+          ratingDiff: Math.abs(prevRankings[winner].rating - prevRankings[loser].rating),
+          learningRate: learningRate // Store learning rate for analysis
         }]
       };
       
@@ -726,7 +881,8 @@ const processBatchUpdate = useCallback((updates) => {
         recentResults: [...prevRankings[loser].recentResults.slice(-9), {
           opponent: winner,
           result: 0,
-          ratingDiff: Math.abs(prevRankings[winner].rating - prevRankings[loser].rating)
+          ratingDiff: Math.abs(prevRankings[winner].rating - prevRankings[loser].rating),
+          learningRate: learningRate // Store learning rate for analysis
         }]
       };
       
@@ -738,7 +894,14 @@ const processBatchUpdate = useCallback((updates) => {
   });
   
   checkConvergence();
-}, [getDynamicLearningRate, checkConvergence, movieMomentum]);
+}, [
+  getDynamicLearningRate, 
+  calculateAdaptiveLearningRate,
+  checkConvergence, 
+  movieMomentum,
+  comparisons,
+  maxComparisons
+]);
 
 const updateRankings = useCallback((winnerIdentifier, loserIdentifier, currentGroup) => {
   // Save current state to history
@@ -888,7 +1051,11 @@ return (
             maxComparisons={maxComparisons}
             avgConfidence={Object.values(rankings).reduce((sum, r) => sum + calculateConfidence(r.movie.identifier), 0) / movies.length}
             stabilityScore={calculateRankStability()}
-            estimatedMinutesLeft={Math.ceil((maxComparisons - comparisons) * 0.1)}
+            learningRate={currentLearningRate}
+            estimatedMinutesLeft={Math.ceil(
+              // More accurate time estimation for remaining comparisons
+              ((maxComparisons - comparisons) * 0.08) * (1 - Math.log10(maxComparisons - comparisons) / 20)
+            )}
           />
         )}
       </div>
