@@ -129,6 +129,9 @@ function RankingProcess({
     return shuffled;
   };
 
+  // Add a ref to track previously compared pairs
+  const comparedPairsRef = useRef(new Map());
+
   const selectGroup = useCallback(() => {
     try {
       if (comparisons >= maxComparisons) {
@@ -151,15 +154,20 @@ function RankingProcess({
       // Add randomness to initial grouping if this is the first comparison
       if (comparisons === 0) {
         availableMovies = shuffleArray(availableMovies);
+        // Initialize the compared pairs tracking map
+        if (!comparedPairsRef.current) {
+          comparedPairsRef.current = new Map();
+        }
       }
   
       let selectedGroup;
       const currentPhase = determinePhase();
   
       if (currentPhase.mode === 'pair') {
-        // Traditional pair selection
+        // Traditional pair selection with enhanced duplicate prevention
         console.log("Pair selection mode");
-        // Get two movies that maximize information gain
+
+        // Get movies that maximize information gain
         const sortedByComparisons = [...availableMovies].sort((a, b) => 
           rankings[a.identifier].comparisons - rankings[b.identifier].comparisons
         );
@@ -167,34 +175,117 @@ function RankingProcess({
         // Select first movie with fewest comparisons
         const firstMovie = sortedByComparisons[0];
         
-        // Find best matching second movie
-        const otherMovies = sortedByComparisons.slice(1, 10); // Limit to 10 candidates for efficiency
-        
-        // Check for recently compared pairs and avoid repeating them
-        let recentPairs = new Set();
-        
-        // Extract recent pairs from movie rankings data
-        if (firstMovie.identifier && rankings[firstMovie.identifier].recentResults) {
-          rankings[firstMovie.identifier].recentResults.forEach(result => {
-            recentPairs.add(result.against);
-          });
+        if (!firstMovie || !firstMovie.identifier) {
+          console.error("No valid first movie found");
+          return;
         }
+
+        // Create a scoring function to find the best second movie
+        const scorePairCandidate = (movie) => {
+          if (!movie || !movie.identifier) return -Infinity;
+          
+          // Base score from movie value
+          let score = calculateMovieValue(movie, rankings, moviesUsed);
+          
+          // Create a unique pair ID (always put smaller ID first to ensure consistency)
+          const pairId = [firstMovie.identifier, movie.identifier].sort().join('_');
+          
+          // Check if this pair has been compared before and how recently
+          if (comparedPairsRef.current.has(pairId)) {
+            const lastComparisonIndex = comparedPairsRef.current.get(pairId);
+            const recencyPenalty = 1 - Math.min(1, (comparisons - lastComparisonIndex) / 50);
+            
+            // Heavy penalty for recently compared pairs
+            score *= (0.1 + recencyPenalty * 0.9);
+          }
+
+          // Check if they were directly compared in recent history
+          const wasRecentlyCompared = 
+            rankings[firstMovie.identifier].recentResults?.some(r => r.opponent === movie.identifier) ||
+            rankings[movie.identifier].recentResults?.some(r => r.opponent === firstMovie.identifier);
+          
+          if (wasRecentlyCompared) {
+            score *= 0.2; // Severe penalty for pairs in recent comparison history
+          }
+          
+          return score;
+        };
+
+        // Score all candidate movies
+        const otherMovies = sortedByComparisons.slice(1);
+        let bestScore = -Infinity;
+        let secondMovie = null;
         
-        // Filter out recently compared pairs
-        const filteredOtherMovies = otherMovies.filter(movie => 
-          !recentPairs.has(movie.identifier)
-        );
-        
-        // If we have filtered movies use those, otherwise fall back to all other movies
-        const candidateMovies = filteredOtherMovies.length > 0 ? filteredOtherMovies : otherMovies;
-        
-        const secondMovie = candidateMovies.reduce((best, current) => {
-          const currentValue = calculateMovieValue(current, rankings, moviesUsed);
-          const bestValue = best ? calculateMovieValue(best, rankings, moviesUsed) : -1;
-          return currentValue > bestValue ? current : best;
-        }, null);
-  
-        selectedGroup = [firstMovie, secondMovie];
+        // Find movie with best score
+        for (let i = 0; i < otherMovies.length; i++) {
+          const currentScore = scorePairCandidate(otherMovies[i]);
+          if (currentScore > bestScore) {
+            bestScore = currentScore;
+            secondMovie = otherMovies[i];
+          }
+        }
+
+        // Special handling for small movie sets or late in the ranking process
+        if (!secondMovie && otherMovies.length > 0) {
+          console.log("Falling back to best available movie pair despite previous comparisons");
+          secondMovie = otherMovies[0];
+        }
+
+        // Check if this is a duplicate pair that we've seen very recently
+        if (firstMovie && secondMovie) {
+          const pairId = [firstMovie.identifier, secondMovie.identifier].sort().join('_');
+          const lastComparisonIndex = comparedPairsRef.current.get(pairId);
+          
+          // If comparison happened extremely recently (last 10 comparisons) and we have enough movies
+          const isVeryRecentComparison = lastComparisonIndex && (comparisons - lastComparisonIndex) < 10;
+          const haveEnoughMovies = availableMovies.length > 10;
+          
+          if (isVeryRecentComparison && haveEnoughMovies) {
+            // Try again with a different first movie
+            if (sortedByComparisons.length > 2) {
+              console.log("Avoiding very recent pair, trying with different first movie");
+              const alternateFirstMovie = sortedByComparisons[1];
+              
+              // Find best second movie for this alternate first
+              let alternateBestScore = -Infinity;
+              let alternateSecondMovie = null;
+              
+              for (let i = 0; i < sortedByComparisons.length; i++) {
+                if (i !== 1) { // Skip the alternate first movie itself
+                  const candidateMovie = sortedByComparisons[i];
+                  const alternatePairId = [alternateFirstMovie.identifier, candidateMovie.identifier].sort().join('_');
+                  
+                  // Skip if this is also a very recent comparison
+                  const lastAlternateComparisonIndex = comparedPairsRef.current.get(alternatePairId);
+                  if (lastAlternateComparisonIndex && (comparisons - lastAlternateComparisonIndex) < 10) {
+                    continue;
+                  }
+                  
+                  const candidateScore = calculateMovieValue(candidateMovie, rankings, moviesUsed);
+                  if (candidateScore > alternateBestScore) {
+                    alternateBestScore = candidateScore;
+                    alternateSecondMovie = candidateMovie;
+                  }
+                }
+              }
+              
+              // Use alternate pair if found
+              if (alternateSecondMovie) {
+                selectedGroup = [alternateFirstMovie, alternateSecondMovie];
+              } else {
+                selectedGroup = [firstMovie, secondMovie]; // Fall back to original
+              }
+            } else {
+              selectedGroup = [firstMovie, secondMovie]; // Not enough movies, use original
+            }
+          } else {
+            selectedGroup = [firstMovie, secondMovie];
+          }
+        } else {
+          console.error("Could not create a valid movie pair");
+          // Emergency fallback - just take the first two available movies
+          selectedGroup = availableMovies.slice(0, 2);
+        }
       } else {
         console.log(`Group selection mode (size: ${currentPhase.size})`);
         
@@ -225,7 +316,7 @@ function RankingProcess({
           if (topMovie && rankings[topMovie.identifier] && rankings[topMovie.identifier].recentResults) {
             // Use for...of instead of forEach to avoid closure creation
             for (const result of rankings[topMovie.identifier].recentResults) {
-              if (result.against) recentlyCompared.add(result.against);
+              if (result.opponent) recentlyCompared.add(result.opponent);
             }
           }
           
@@ -317,7 +408,7 @@ function RankingProcess({
           const recentlyCompared = new Set();
           if (firstMovie && rankings[firstMovie.identifier] && rankings[firstMovie.identifier].recentResults) {
             for (const result of rankings[firstMovie.identifier].recentResults) {
-              if (result.against) recentlyCompared.add(result.against);
+              if (result.opponent) recentlyCompared.add(result.opponent);
             }
           }
           
@@ -355,7 +446,7 @@ function RankingProcess({
           const recentlyCompared = new Set();
           if (rankings[anchorMovie.identifier].recentResults) {
             for (const result of rankings[anchorMovie.identifier].recentResults) {
-              if (result.against) recentlyCompared.add(result.against);
+              if (result.opponent) recentlyCompared.add(result.opponent);
             }
           }
           
@@ -442,6 +533,12 @@ function RankingProcess({
       }
       console.log(`Selected group of ${selectedGroup ? selectedGroup.length : 0} movies: ${movieTitles}`);
       
+      // For pair mode, store this comparison in our tracking map
+      if (selectedGroup && selectedGroup.length === 2) {
+        const pairId = [selectedGroup[0].identifier, selectedGroup[1].identifier].sort().join('_');
+        comparedPairsRef.current.set(pairId, comparisons);
+      }
+      
       // Mark movies as used - avoid closure and forEach
       if (selectedGroup) {
         setCurrentGroup([...selectedGroup]); // Make a copy to avoid reference issues
@@ -510,6 +607,8 @@ function RankingProcess({
     setCurrentGroup([]); // This will trigger useEffect to select new group
   }, [onChoose]);
 
+  // Remove the auto-resolved pair state since we're handling silently
+
   useEffect(() => {
     // Memoize the handler to prevent recreating on each render
     const handleKeyPress = (e) => {
@@ -540,6 +639,70 @@ function RankingProcess({
       selectGroup();
     }
   }, [currentGroup.length, comparisons, maxComparisons, selectGroup]);
+  
+  // Add effect to check and auto-resolve previously compared pairs
+  useEffect(() => {
+    // Only check for auto-resolution in pair mode
+    if (currentMode === 'pair' && currentGroup.length === 2 && !isAnimating) {
+      const [movieA, movieB] = currentGroup;
+      
+      // Create unique pair ID
+      const pairId = [movieA.identifier, movieB.identifier].sort().join('_');
+      const lastComparisonIndex = comparedPairsRef.current?.get(pairId);
+      
+      // If this is an extremely recent comparison (within last 5 comparisons)
+      if (lastComparisonIndex && (comparisons - lastComparisonIndex) < 5) {
+        // Find previous result from rankingsA.recentResults
+        const prevResult = rankings[movieA.identifier]?.recentResults?.find(
+          r => r.opponent === movieB.identifier
+        );
+        
+        // Or from rankingsB.recentResults
+        const altPrevResult = !prevResult && rankings[movieB.identifier]?.recentResults?.find(
+          r => r.opponent === movieA.identifier
+        );
+        
+        if (prevResult || altPrevResult) {
+          console.log("Silently auto-resolving previously compared pair");
+          
+          // Determine winner and loser from previous result
+          let winner, loser;
+          
+          if (prevResult) {
+            // If A won against B previously
+            if (prevResult.result === 1) {
+              winner = movieA;
+              loser = movieB;
+            } else {
+              winner = movieB;
+              loser = movieA;
+            }
+          } else if (altPrevResult) {
+            // If B won against A previously
+            if (altPrevResult.result === 1) {
+              winner = movieB;
+              loser = movieA;
+            } else {
+              winner = movieA;
+              loser = movieB;
+            }
+          }
+          
+          // Auto-resolve with previous result immediately
+          // Skip animation and proceed directly to the next pair
+          if (winner && loser) {
+            // Use a very short delay just to ensure state updates don't conflict
+            setTimeout(() => {
+              // Handle the choice silently
+              onChoose(winner.identifier, loser.identifier, [{...winner}, {...loser}]);
+              // Clear the current group to trigger selection of next pair
+              setCurrentGroup([]);
+            }, 10);
+          }
+        }
+      }
+    }
+  }, [currentGroup, currentMode, isAnimating, rankings, comparisons, onChoose]);
   
   // Cleanup timeout on unmount
   useEffect(() => {
