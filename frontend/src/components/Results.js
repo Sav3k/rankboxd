@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { AlertCircle, ChevronUp, Download, LineChart } from 'lucide-react';
+import { AlertCircle, ChevronUp, Download, LineChart, Check } from 'lucide-react';
 import MovieStatsPanel from './MovieStatsPanel';
 import EnhancedExplanation from './Explanation';
 
@@ -30,7 +30,61 @@ document.head.appendChild(style);
 
 const MovieResults = ({ rankings, calculateConfidence }) => {
   const [expandedMovie, setExpandedMovie] = useState(null);
-  const sortedMovies = [...rankings].sort((a, b) => b.rating - a.rating);
+  
+  // Calculate direct comparison consistency rate
+  const calculateDirectComparisonConsistency = useCallback(() => {
+    // Create a map of all direct comparisons from the rankings data
+    const directComparisons = new Map();
+    
+    // For each movie, look at recent results to identify direct comparisons
+    for (const movie of rankings) {
+      if (!movie.recentResults) continue;
+      
+      for (const result of movie.recentResults) {
+        if (!result.opponent) continue;
+        
+        // Record this comparison outcome (winner -> loser)
+        const key = result.result === 1 ? 
+          `${movie.movie.identifier}-${result.opponent}` : 
+          `${result.opponent}-${movie.movie.identifier}`;
+        
+        directComparisons.set(key, true);
+      }
+    }
+    
+    // Check if the final rankings respect these direct comparisons
+    let consistentComparisons = 0;
+    let totalChecked = 0;
+    
+    // Get sorted rankings for consistency check
+    const sortedRankings = [...rankings].sort((a, b) => b.rating - a.rating);
+    const rankingsMap = new Map(sortedRankings.map(r => [r.movie.identifier, r]));
+    
+    for (const [comparison] of directComparisons) {
+      const [winnerId, loserId] = comparison.split('-');
+      totalChecked++;
+      
+      // Find the movies in the rankings
+      const winner = rankingsMap.get(winnerId);
+      const loser = rankingsMap.get(loserId);
+      
+      if (!winner || !loser) continue;
+      
+      // Check if ranking respects the direct comparison
+      if (winner.rating > loser.rating) {
+        consistentComparisons++;
+      }
+    }
+    
+    return {
+      rate: totalChecked > 0 ? consistentComparisons / totalChecked : 1,
+      consistent: consistentComparisons,
+      total: totalChecked
+    };
+  }, [rankings]);
+  
+  const consistencyScore = useMemo(() => calculateDirectComparisonConsistency(), [calculateDirectComparisonConsistency]);
+  const sortedMovies = useMemo(() => [...rankings].sort((a, b) => b.rating - a.rating), [rankings]);
 
   const calculateNeighborPerformance = (movies, currentIndex) => {
     const range = 5;
@@ -106,6 +160,45 @@ const MovieResults = ({ rankings, calculateConfidence }) => {
             </button>
           </div>
 
+        {/* Results Summary Card */}
+        <div className="relative overflow-hidden bg-gradient-to-r from-primary/10 via-primary/5 to-transparent 
+                     border border-primary/10 rounded-lg px-6 py-4 mb-6">
+          <div className="absolute inset-0 bg-primary/5 background-animate" />
+          <div className="relative flex gap-4 items-start">
+            <div className="p-2 rounded-full bg-primary/20">
+              <Check className="w-5 h-5 text-primary" />
+            </div>
+            <div className="space-y-2 flex-1">
+              <div className="font-medium text-base-content">
+                Ranking Results Summary
+              </div>
+              <div className="text-sm text-base-content/80 leading-relaxed">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-2 mt-2">
+                  <div>
+                    <span className="text-base-content/70">Direct comparison consistency:</span>{' '}
+                    <span className="font-medium">{(consistencyScore.rate * 100).toFixed(1)}%</span>
+                    <span className="text-sm text-base-content/60 ml-1">
+                      ({consistencyScore.consistent}/{consistencyScore.total})
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-base-content/70">Average confidence score:</span>{' '}
+                    <span className="font-medium">{Math.round(rankings.reduce((sum, r) => sum + calculateConfidence(r.movie.identifier), 0) / rankings.length * 100)}%</span>
+                  </div>
+                  <div>
+                    <span className="text-base-content/70">Total movies ranked:</span>{' '}
+                    <span className="font-medium">{rankings.length}</span>
+                  </div>
+                  <div>
+                    <span className="text-base-content/70">Ranking method:</span>{' '}
+                    <span className="font-medium">Bayesian with direct comparison consistency</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        
         {(() => {
           const avgConfidence = rankings.reduce((sum, r) => sum + calculateConfidence(r.movie.identifier), 0) / rankings.length;
           return avgConfidence < 0.75 && (
@@ -125,7 +218,7 @@ const MovieResults = ({ rankings, calculateConfidence }) => {
                     which is lower than ideal. This could happen if:
                     <ul className="mt-2 ml-4 space-y-1 list-disc text-base-content/70">
                       <li>You had some inconsistent preferences between movies</li>
-                      <li>The ranking process was completed with to little comparisons</li>
+                      <li>The ranking process was completed with too few comparisons</li>
                       <li>Your movie list was particularly large</li>
                     </ul>
                     <div className="mt-3 text-base-content/90 font-medium">

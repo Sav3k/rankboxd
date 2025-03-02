@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { Timer, Zap, Target, Info } from 'lucide-react';
+import { Timer, Zap, Target, Info, Check } from 'lucide-react';
 
 const getPhaseInfo = (progress) => {
   // Updated to match phase transitions in RankingProcess.js
@@ -30,7 +30,8 @@ const StatusBar = ({
   avgConfidence,
   stabilityScore,
   estimatedMinutesLeft,
-  learningRate
+  learningRate,
+  globalOptimizationStats
 }) => {
   const progress = comparisons / maxComparisons;
   const phase = useMemo(() => getPhaseInfo(progress), [progress]);
@@ -57,7 +58,7 @@ const StatusBar = ({
             </span>
             <div className="relative group">
               <Info className="w-4 h-4 text-base-content/50 hover:text-base-content cursor-help transition-colors" />
-              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-40 p-3 bg-base-300 rounded-lg 
+              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-52 p-3 bg-base-300 rounded-lg 
                 opacity-0 invisible group-hover:opacity-100 group-hover:visible
                 transition-all duration-200 text-sm shadow-lg z-50">
                 <div className="space-y-2">
@@ -73,6 +74,10 @@ const StatusBar = ({
                     <div className="text-xs text-base-content/70">Time Remaining</div>
                     <div className="font-medium">~{estimatedMinutesLeft} min</div>
                   </div>
+                  <div className="flex items-center gap-1 bg-primary/5 -mx-1 px-1 py-0.5 rounded">
+                    <Check className="w-3 h-3 text-primary/80" />
+                    <div className="text-xs">Direct comparison consistency</div>
+                  </div>
                   {learningRate && (
                     <div>
                       <div className="text-xs text-base-content/70">Learning Rate</div>
@@ -84,6 +89,18 @@ const StatusBar = ({
                             style={{ width: `${normalizedLearningRate * 100}%` }}
                           />
                         </div>
+                      </div>
+                    </div>
+                  )}
+                  
+                  {globalOptimizationStats && globalOptimizationStats.totalCorrections > 0 && (
+                    <div>
+                      <div className="text-xs text-base-content/70">Global Optimizations</div>
+                      <div className="font-medium">
+                        {globalOptimizationStats.totalCorrections} corrections
+                      </div>
+                      <div className="text-xs text-base-content/70">
+                        Last: {comparisons - globalOptimizationStats.lastOptimizationComparison} comp. ago
                       </div>
                     </div>
                   )}

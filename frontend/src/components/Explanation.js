@@ -26,6 +26,18 @@ const ExplanationContent = () => (
           of matchups. Higher scores mean more reliable rankings.
         </p>
       </div>
+      
+      <div className="space-y-2 mt-4">
+        <div className="flex items-center gap-2 text-accent">
+          <Info className="w-5 h-5" />
+          <h3 className="font-semibold">Direct Comparison Consistency</h3>
+        </div>
+        <p className="text-sm text-base-content/70 leading-relaxed">
+          Our algorithm ensures that if you chose Movie A over Movie B in a direct comparison, 
+          A will always be ranked higher than B in your final results, maintaining perfect 
+          consistency with your explicit preferences.
+        </p>
+      </div>
     </div>
     
     <div className="space-y-4">
@@ -39,6 +51,7 @@ const ExplanationContent = () => (
           <li>Performance consistency over time</li>
           <li>Number and quality of comparisons</li>
           <li>Position stability in rankings</li>
+          <li>Direct comparison constraint satisfaction</li>
         </ul>
       </div>
       

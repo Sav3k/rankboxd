@@ -1,5 +1,5 @@
 // App.js
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import InputForm from './components/InputForm';
 import RankingProcess from './components/RankingProcess';
 import MovieResults from './components/Results';
@@ -264,6 +264,13 @@ function App() {
   const [movieMomentum, setMovieMomentum] = useState({});
   const [isCurrentComparisonHighImpact, setIsCurrentComparisonHighImpact] = useState(false);
   const [currentLearningRate, setCurrentLearningRate] = useState(0.1);
+  const [globalOptimizationStats, setGlobalOptimizationStats] = useState({
+    lastOptimizationComparison: 0,
+    totalCorrections: 0,
+    transitivityViolationsFixed: 0,
+    inconsistencyCorrectionsMade: 0
+  });
+  const globalRecalculationRef = useRef(false);
 
   const CONVERGENCE_CHECK_WINDOW = 10;
   const BASE_LEARNING_RATE = 0.1;
@@ -275,6 +282,20 @@ function App() {
   const MOMENTUM_FACTOR = 0.9;
   const MIN_LEARNING_RATE = 0.01;
   const MAX_LEARNING_RATE = 0.2;
+  
+  // Global Optimization parameters
+  const GLOBAL_OPTIMIZATION = {
+    RECALCULATION_INTERVAL: 10,    // Perform global recalculation more frequently (was 15)
+    CONSISTENCY_THRESHOLD: 0.85,   // Threshold for consistency correction
+    MAX_CORRECTION_STRENGTH: 0.5,  // Maximum correction strength (0-1)
+    MIN_COMPARISONS_REQUIRED: 5,   // Fewer comparisons before optimizing (was 10)
+    TRANSITIVITY_VIOLATIONS_WEIGHT: 0.7, // Weight for transitivity violation corrections
+    INCREMENTAL_ADJUSTMENT: 0.6,   // Portion of correction to apply (incremental approach)
+    CYCLES_DETECTION_SAMPLE: 300,  // Maximum number of cycles to check
+    CYCLES_MAX_LENGTH: 5,          // Maximum cycle length to detect (3-5 recommended)
+    DIRECT_COMPARISON_PRIORITY: 1.0, // Priority for direct comparisons (highest priority)
+    DIRECT_CORRECTION_STRENGTH: 0.8  // Strength of direct comparison corrections (0-1)
+  };
   
   // Learning rate adaptation parameters
   const LEARNING_RATE_PARAMS = {
@@ -421,10 +442,24 @@ function App() {
       
       // Reset the rankings to the previous state and provide the previous pair
       if (lastComparison) {
-        setRankings(lastComparison.rankings);
+        // Create a deep copy of the rankings to avoid reference leaks
+        const previousRankings = Object.entries(lastComparison.rankings).reduce((acc, [key, value]) => {
+          acc[key] = {
+            ...value,
+            movie: {...value.movie},
+            recentResults: value.recentResults.map(result => ({...result}))
+          };
+          return acc;
+        }, {});
+        
+        setRankings(previousRankings);
+        
         // Reset recent changes since we're going back
         setRecentChanges([]);
-        return lastComparison.pair; // Return the previous pair
+        
+        // Create a new array with copies of the pair objects
+        const pairCopy = lastComparison.pair.map(item => ({...item}));
+        return pairCopy; // Return copies of the previous pair
       }
     }
     return null;
@@ -689,6 +724,349 @@ function App() {
 
     return stabilityScore / totalMovies;
   }, [rankings, comparisonHistory, EARLY_TERMINATION.STABILITY_WINDOW]);
+  
+  // Detect cycles in the pairwise comparison graph
+  const detectPreferenceCycles = useCallback(() => {
+    const movieIds = Object.keys(rankings);
+    const numMovies = movieIds.length;
+    
+    // Safety checks
+    if (numMovies < 3) return []; // Need at least 3 movies to form a cycle
+    
+    // Build a directed graph of preferences
+    const preferenceGraph = {};
+    movieIds.forEach(id => {
+      preferenceGraph[id] = [];
+    });
+    
+    // Fill the graph with observed preferences
+    for (const comparison of comparisonHistory) {
+      const { winner, loser } = comparison;
+      if (!preferenceGraph[winner]) continue;
+      if (!preferenceGraph[winner].includes(loser)) {
+        preferenceGraph[winner].push(loser);
+      }
+    }
+    
+    // Function to detect cycles using DFS
+    const detectCycle = (startNode, maxLength) => {
+      const visited = new Set();
+      const path = [];
+      const cycles = [];
+      
+      const dfs = (node, depth = 0) => {
+        if (depth > maxLength) return;
+        
+        visited.add(node);
+        path.push(node);
+        
+        for (const neighbor of preferenceGraph[node] || []) {
+          if (neighbor === startNode && depth > 1) {
+            // Cycle found
+            cycles.push([...path]);
+          } else if (!visited.has(neighbor)) {
+            dfs(neighbor, depth + 1);
+          }
+        }
+        
+        path.pop();
+        visited.delete(node);
+      };
+      
+      dfs(startNode);
+      return cycles;
+    };
+    
+    // Limit the number of cycles we search for to avoid performance issues
+    const sampleMovies = numMovies > 50 ? 
+      movieIds.sort(() => Math.random() - 0.5).slice(0, Math.min(50, numMovies)) : 
+      movieIds;
+    
+    // Detect cycles
+    const cycles = [];
+    for (const startNode of sampleMovies) {
+      const nodeCycles = detectCycle(startNode, GLOBAL_OPTIMIZATION.CYCLES_MAX_LENGTH);
+      cycles.push(...nodeCycles);
+      
+      // Limit the total number of cycles we process
+      if (cycles.length > GLOBAL_OPTIMIZATION.CYCLES_DETECTION_SAMPLE) break;
+    }
+    
+    return cycles;
+  }, [rankings, comparisonHistory]);
+  
+  // Find and fix transitivity violations
+  const findTransitivityViolations = useCallback(() => {
+    const allMovies = Object.values(rankings);
+    const cycles = detectPreferenceCycles();
+    const violations = [];
+    
+    // Additional checks for transitivity violations outside cycles
+    // Sample random triads and check if they violate transitivity
+    const sample = Math.min(GLOBAL_OPTIMIZATION.CYCLES_DETECTION_SAMPLE, allMovies.length * (allMovies.length - 1) * (allMovies.length - 2) / 6);
+    
+    for (let i = 0; i < sample; i++) {
+      // Randomly select 3 different movies
+      const indices = new Set();
+      while (indices.size < 3) {
+        indices.add(Math.floor(Math.random() * allMovies.length));
+      }
+      
+      const [a, b, c] = [...indices].map(idx => allMovies[idx]);
+      const idA = a.movie.identifier;
+      const idB = b.movie.identifier;
+      const idC = c.movie.identifier;
+      
+      // Check if ratings A > B > C but preference goes against transitivity
+      if (a.rating > b.rating && b.rating > c.rating) {
+        // Check history if there's evidence against this transitivity
+        const violatesAC = comparisonHistory.some(comp => 
+          comp.winner === idC && comp.loser === idA);
+        const violatesAB = comparisonHistory.some(comp => 
+          comp.winner === idB && comp.loser === idA);
+        const violatesBC = comparisonHistory.some(comp => 
+          comp.winner === idC && comp.loser === idB);
+          
+        if (violatesAC || (violatesAB && violatesBC)) {
+          violations.push({ type: 'triad', movies: [idA, idB, idC] });
+        }
+      }
+    }
+    
+    // Convert cycles to transitive violations
+    for (const cycle of cycles) {
+      violations.push({ type: 'cycle', movies: cycle });
+    }
+    
+    return violations;
+  }, [rankings, comparisonHistory, detectPreferenceCycles]);
+  
+  // Build preference graph from direct comparisons
+  const buildPreferenceGraph = useCallback(() => {
+    const preferenceGraph = {};
+    
+    // Initialize graph with all movie IDs
+    Object.keys(rankings).forEach(id => {
+      preferenceGraph[id] = {
+        outgoing: new Set(), // Movies that this movie was preferred over
+        incoming: new Set()  // Movies that were preferred over this movie
+      };
+    });
+    
+    // Fill the graph with all direct comparison results
+    for (const comparison of comparisonHistory) {
+      const { winner, loser } = comparison;
+      if (!preferenceGraph[winner] || !preferenceGraph[loser]) continue;
+      
+      preferenceGraph[winner].outgoing.add(loser);
+      preferenceGraph[loser].incoming.add(winner);
+    }
+    
+    return preferenceGraph;
+  }, [rankings, comparisonHistory]);
+  
+  // Check for direct comparison constraint violations in current rankings
+  const findDirectComparisonViolations = useCallback(() => {
+    const preferenceGraph = buildPreferenceGraph();
+    const violations = [];
+    
+    // Check each pair of movies for rating violations against direct comparisons
+    for (const movieId in preferenceGraph) {
+      // Check outgoing edges (movies this one should outrank)
+      for (const loserId of preferenceGraph[movieId].outgoing) {
+        // Violation if the rating doesn't match the direct comparison result
+        if (rankings[movieId].rating <= rankings[loserId].rating) {
+          violations.push({
+            type: 'direct',
+            winner: movieId,
+            loser: loserId,
+            ratingDiff: rankings[loserId].rating - rankings[movieId].rating
+          });
+        }
+      }
+    }
+    
+    return violations;
+  }, [rankings, buildPreferenceGraph]);
+
+  // Perform global optimization to fix inconsistencies
+  const performGlobalOptimization = useCallback(() => {
+    // Skip if too early or currently processing
+    if (comparisons < GLOBAL_OPTIMIZATION.MIN_COMPARISONS_REQUIRED || 
+        globalRecalculationRef.current ||
+        comparisons - globalOptimizationStats.lastOptimizationComparison < GLOBAL_OPTIMIZATION.RECALCULATION_INTERVAL) {
+      return;
+    }
+    
+    console.log(`Starting global optimization at comparison #${comparisons}`);
+    globalRecalculationRef.current = true;
+    
+    try {
+      // Find both transitivity violations and direct comparison violations
+      const transitivityViolations = findTransitivityViolations();
+      const directViolations = findDirectComparisonViolations();
+      
+      const allViolations = [...transitivityViolations, ...directViolations];
+      
+      let correctionsMade = 0;
+      let transitivityFixed = 0;
+      let directComparisonFixed = 0;
+      
+      // Create a working copy of rankings
+      const updatedRankings = { ...rankings };
+      
+      if (allViolations.length > 0) {
+        console.log(`Found ${transitivityViolations.length} transitivity violations and ${directViolations.length} direct comparison violations`);
+        
+        // Process direct comparison violations first (they have priority)
+        directViolations.forEach(violation => {
+          const { winner, loser, ratingDiff } = violation;
+          
+          // Calculate target adjustment to fix the violation with some margin
+          const targetDiff = ratingDiff + 0.1; // Ensure clear separation
+          
+          // Apply stronger correction for direct comparison violations
+          const DIRECT_CORRECTION_FACTOR = 0.8; // 80% adjustment toward target
+          const adjustment = targetDiff * DIRECT_CORRECTION_FACTOR;
+          
+          // Apply more aggressive adjustment to fix direct comparisons
+          // Split the adjustment between both movies
+          updatedRankings[winner].rating += adjustment * 0.6; // 60% boost to winner
+          updatedRankings[loser].rating -= adjustment * 0.4;  // 40% reduction to loser
+          
+          correctionsMade++;
+          directComparisonFixed++;
+        });
+        
+        // Then process transitivity violations
+        transitivityViolations.forEach(violation => {
+          // Process each violation
+          const { type, movies } = violation;
+          
+          if (type === 'cycle') {
+            // For a cycle, make incremental adjustments to all movies in the cycle
+            const cycleLength = movies.length;
+            
+            // Calculate average rating in the cycle
+            const avgRating = movies.reduce((sum, id) => sum + updatedRankings[id].rating, 0) / cycleLength;
+            
+            // Apply incremental adjustments to move ratings toward consistency
+            movies.forEach((id, i) => {
+              const nextId = movies[(i + 1) % cycleLength]; // next movie in cycle
+              
+              if (updatedRankings[id].rating <= updatedRankings[nextId].rating) {
+                // If current rating violates the preference, adjust both
+                const diff = (updatedRankings[nextId].rating - updatedRankings[id].rating) + 0.05;
+                const adjustment = diff * GLOBAL_OPTIMIZATION.INCREMENTAL_ADJUSTMENT;
+                const maxAdjustment = GLOBAL_OPTIMIZATION.MAX_CORRECTION_STRENGTH;
+                
+                // Adjust toward average while fixing inconsistency
+                updatedRankings[id].rating += Math.min(adjustment, maxAdjustment);
+                updatedRankings[nextId].rating -= Math.min(adjustment, maxAdjustment);
+                
+                correctionsMade++;
+              }
+            });
+            
+            transitivityFixed++;
+          } else if (type === 'triad') {
+            // For a triad violation, adjust the most uncertain movie
+            const [idA, idB, idC] = movies;
+            
+            // Find most uncertain movie in the triad
+            const uncertainties = [
+              updatedRankings[idA].ratingUncertainty,
+              updatedRankings[idB].ratingUncertainty,
+              updatedRankings[idC].ratingUncertainty
+            ];
+            
+            const maxUncertaintyIndex = uncertainties.indexOf(Math.max(...uncertainties));
+            const adjustId = movies[maxUncertaintyIndex];
+            
+            // Calculate target rating that preserves transitivity
+            let targetRating;
+            if (maxUncertaintyIndex === 0) {
+              // A should be greater than B
+              targetRating = updatedRankings[idB].rating + 0.1;
+            } else if (maxUncertaintyIndex === 1) {
+              // B should be between A and C
+              targetRating = (updatedRankings[idA].rating + updatedRankings[idC].rating) / 2;
+            } else {
+              // C should be less than B
+              targetRating = updatedRankings[idB].rating - 0.1;
+            }
+            
+            // Apply incremental adjustment
+            const current = updatedRankings[adjustId].rating;
+            const adjustment = (targetRating - current) * GLOBAL_OPTIMIZATION.INCREMENTAL_ADJUSTMENT;
+            const maxAdjustment = GLOBAL_OPTIMIZATION.MAX_CORRECTION_STRENGTH;
+            
+            // Apply capped adjustment
+            updatedRankings[adjustId].rating += Math.min(Math.abs(adjustment), maxAdjustment) * Math.sign(adjustment);
+            
+            correctionsMade++;
+            transitivityFixed++;
+          }
+        });
+      }
+      
+      // Re-normalize ratings to maintain scale
+      const allRatings = Object.values(updatedRankings).map(r => r.rating);
+      const meanRating = allRatings.reduce((sum, r) => sum + r, 0) / allRatings.length;
+      const stdDev = Math.sqrt(allRatings.reduce((sum, r) => sum + Math.pow(r - meanRating, 2), 0) / allRatings.length);
+      
+      if (stdDev > 0) {
+        Object.keys(updatedRankings).forEach(id => {
+          updatedRankings[id].rating = (updatedRankings[id].rating - meanRating) / stdDev;
+        });
+      }
+      
+      // Verify that direct comparison constraints are still maintained after normalization
+      const postNormViolations = [];
+      const preferenceGraph = buildPreferenceGraph();
+      
+      for (const movieId in preferenceGraph) {
+        for (const loserId of preferenceGraph[movieId].outgoing) {
+          if (updatedRankings[movieId].rating <= updatedRankings[loserId].rating) {
+            // Small final adjustment if normalization reintroduced violations
+            const adjustment = 0.05;
+            updatedRankings[movieId].rating += adjustment;
+            updatedRankings[loserId].rating -= adjustment;
+            postNormViolations.push({ winner: movieId, loser: loserId });
+          }
+        }
+      }
+      
+      if (postNormViolations.length > 0) {
+        console.log(`Fixed ${postNormViolations.length} violations introduced by normalization`);
+        correctionsMade += postNormViolations.length;
+      }
+      
+      // Update rankings if corrections were made
+      if (correctionsMade > 0) {
+        console.log(`Applied ${correctionsMade} corrections (${directComparisonFixed} direct comparison, ${transitivityFixed} transitivity)`);
+        setRankings(updatedRankings);
+        
+        // Update statistics
+        setGlobalOptimizationStats(prev => ({
+          lastOptimizationComparison: comparisons,
+          totalCorrections: prev.totalCorrections + correctionsMade,
+          transitivityViolationsFixed: prev.transitivityViolationsFixed + transitivityFixed,
+          inconsistencyCorrectionsMade: prev.inconsistencyCorrectionsMade + correctionsMade
+        }));
+      } else {
+        console.log('No corrections needed during global optimization');
+        setGlobalOptimizationStats(prev => ({
+          ...prev,
+          lastOptimizationComparison: comparisons
+        }));
+      }
+    } catch (err) {
+      console.error('Error in global optimization:', err);
+    } finally {
+      globalRecalculationRef.current = false;
+    }
+  }, [rankings, comparisons, comparisonHistory, findTransitivityViolations, findDirectComparisonViolations, buildPreferenceGraph, globalOptimizationStats]);
 
   const checkRankingStability = useCallback(() => {
     const progress = comparisons / maxComparisons;
@@ -913,11 +1291,22 @@ const updateRankings = useCallback((winnerIdentifier, loserIdentifier, currentGr
     currentProgress
   );
 
+  // Create deep copies of the rankings to avoid memory leaks
+  const rankingsCopy = Object.entries(rankings).reduce((acc, [key, value]) => {
+    // Create a new object for each movie with a deep copy of movie data
+    acc[key] = {
+      ...value,
+      movie: {...value.movie},
+      recentResults: value.recentResults.map(result => ({...result}))
+    };
+    return acc;
+  }, {});
+  
   setComparisonHistory(prev => [...prev, {
     winner: winnerIdentifier,
     loser: loserIdentifier,
-    rankings: { ...rankings },
-    pair: currentGroup, // Now this can be a group, not just a pair
+    rankings: rankingsCopy,
+    pair: currentGroup.map(item => ({...item})), // Create shallow copies of each item
     isHighImpact: currentHighImpact
   }]);
 
@@ -989,14 +1378,39 @@ const updateRankings = useCallback((winnerIdentifier, loserIdentifier, currentGr
     return newPending;
   });
 
-  setComparisons(prev => prev + 1);
-}, [rankings, processBatchUpdate, calculateOptimalBatchSize, comparisons, maxComparisons]);
+  setComparisons(prev => {
+    const newComparisons = prev + 1;
+    
+    // Check if we should perform global optimization
+    if (newComparisons >= GLOBAL_OPTIMIZATION.MIN_COMPARISONS_REQUIRED && 
+        newComparisons % GLOBAL_OPTIMIZATION.RECALCULATION_INTERVAL === 0) {
+      // Schedule global optimization to run after state updates
+      setTimeout(() => performGlobalOptimization(), 0);
+    }
+    
+    return newComparisons;
+  });
+}, [
+  rankings, 
+  processBatchUpdate, 
+  calculateOptimalBatchSize, 
+  comparisons, 
+  maxComparisons, 
+  performGlobalOptimization
+]);
 
   useEffect(() => {
     if (step === 'results' && pendingUpdates.length > 0) {
       processBatchUpdate(pendingUpdates);
       setPendingUpdates([]);
     }
+    
+    // Cleanup on step change - suggest garbage collection
+    return () => {
+      if (typeof window !== 'undefined' && window.gcCollect) {
+        window.gcCollect();
+      }
+    };
   }, [step, pendingUpdates, processBatchUpdate]);
 
   const memoizedRankingProcess = useMemo(() => (
@@ -1052,6 +1466,7 @@ return (
             avgConfidence={Object.values(rankings).reduce((sum, r) => sum + calculateConfidence(r.movie.identifier), 0) / movies.length}
             stabilityScore={calculateRankStability()}
             learningRate={currentLearningRate}
+            globalOptimizationStats={globalOptimizationStats}
             estimatedMinutesLeft={Math.ceil(
               // More accurate time estimation for remaining comparisons
               ((maxComparisons - comparisons) * 0.08) * (1 - Math.log10(maxComparisons - comparisons) / 20)
