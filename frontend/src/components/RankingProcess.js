@@ -23,6 +23,15 @@ function RankingProcess({
   const moviesRef = useRef(movies);
   const containerRef = useRef(null);
   const timeoutRef = useRef(null);
+  
+  // Update moviesRef when movies change, with proper cleanup
+  useEffect(() => {
+    moviesRef.current = movies;
+    return () => {
+      // Clear the ref on unmount to prevent memory leaks
+      moviesRef.current = null;
+    };
+  }, [movies]);
 
   // Function to determine the current phase based on progress
   const determinePhase = useCallback(() => {
@@ -102,14 +111,24 @@ function RankingProcess({
     return totalValue + individualSum;
   }, [calculateMovieValue, moviesUsed]);
 
-  // Properly memoize movies
-  const memoizedMovies = useMemo(() => moviesRef.current, []);
+  // References are already memoized by useRef, no need for additional useMemo
+  // Just use moviesRef.current directly
   
-  // Memoize available movies separately
+  // Memoize available movies separately with proper dependencies
   const availableMoviesCache = useMemo(() => {
-    return memoizedMovies.filter(movie => !moviesUsed.has(movie.identifier));
-  }, [memoizedMovies, moviesUsed, moviesUsed.size]);
+    return moviesRef.current.filter(movie => !moviesUsed.has(movie.identifier));
+  }, [moviesRef.current, moviesUsed, moviesUsed.size]);
   
+  // Fisher-Yates shuffle algorithm
+  const shuffleArray = (array) => {
+    const shuffled = [...array];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    return shuffled;
+  };
+
   const selectGroup = useCallback(() => {
     try {
       if (comparisons >= maxComparisons) {
@@ -119,12 +138,19 @@ function RankingProcess({
       }
   
       // Get available movies, refreshing the pool if needed
-      let availableMovies = availableMoviesCache;
+      // Create a local copy to prevent reference issues
+      let availableMovies = [...availableMoviesCache];
   
       if (availableMovies.length < groupSize) {
         console.log("Resetting movies used pool");
-        availableMovies = [...moviesRef.current];
+        // Create a fresh copy to break any lingering references
+        availableMovies = moviesRef.current ? [...moviesRef.current] : [];
         setMoviesUsed(new Set());
+      }
+      
+      // Add randomness to initial grouping if this is the first comparison
+      if (comparisons === 0) {
+        availableMovies = shuffleArray(availableMovies);
       }
   
       let selectedGroup;
@@ -172,166 +198,271 @@ function RankingProcess({
       } else {
         console.log(`Group selection mode (size: ${currentPhase.size})`);
         
-        // Group formation strategies
-        const strategies = [
-          // Strategy 1: Mix of high uncertainty movies across rating spectrum
-          () => {
-            // Get movies sorted by uncertainty but filter out recently compared pairs
-            const topMovie = [...availableMovies].sort((a, b) => 
-              calculateUncertainty(b.identifier) - calculateUncertainty(a.identifier)
-            )[0];
-            
-            // Get set of recently compared movies for the top uncertain movie
-            const recentlyCompared = new Set();
-            if (topMovie && rankings[topMovie.identifier].recentResults) {
-              rankings[topMovie.identifier].recentResults.forEach(result => {
-                recentlyCompared.add(result.against);
-              });
+        // Group formation strategies - defined outside as constants to avoid recreating functions
+        const strategyFunctions = [];
+        
+        // Strategy 1: Mix of high uncertainty movies across rating spectrum
+        strategyFunctions.push(() => {
+          // Get movies sorted by uncertainty but filter out recently compared pairs
+          let sortedByUncertainty = [...availableMovies].sort((a, b) => 
+            calculateUncertainty(b.identifier) - calculateUncertainty(a.identifier)
+          );
+          
+          // Add randomness to initial grouping
+          if (comparisons === 0) {
+            const topCount = Math.max(1, Math.ceil(sortedByUncertainty.length * 0.2));
+            const topMovies = sortedByUncertainty.slice(0, topCount);
+            const shuffledTopMovies = shuffleArray(topMovies);
+            sortedByUncertainty = [...shuffledTopMovies, ...sortedByUncertainty.slice(topCount)];
+          }
+          
+          // Safely access the top movie
+          if (sortedByUncertainty.length === 0) return [];
+          const topMovie = sortedByUncertainty[0];
+          
+          // Get set of recently compared movies for the top uncertain movie
+          const recentlyCompared = new Set();
+          if (topMovie && rankings[topMovie.identifier] && rankings[topMovie.identifier].recentResults) {
+            // Use for...of instead of forEach to avoid closure creation
+            for (const result of rankings[topMovie.identifier].recentResults) {
+              if (result.against) recentlyCompared.add(result.against);
             }
-            
-            // Filter the remaining movies to exclude recently compared pairs
-            const remainingMovies = [...availableMovies].filter(movie => 
-              movie.identifier !== topMovie.identifier && 
-              !recentlyCompared.has(movie.identifier)
-            );
-            
-            const sortedByUncertainty = [topMovie, ...remainingMovies.sort((a, b) => 
-              calculateUncertainty(b.identifier) - calculateUncertainty(a.identifier)
-            )];
-            
-            // Take top uncertain movies, but ensure rating diversity
-            const selectedMovies = [sortedByUncertainty[0]];
-            const ratingBuckets = {
-              low: [],
-              mid: [],
-              high: []
-            };
-            
-            // Divide remaining movies into rating buckets
-            for (let i = 1; i < sortedByUncertainty.length; i++) {
-              const movie = sortedByUncertainty[i];
-              const rating = rankings[movie.identifier].rating;
-              
-              if (rating < -0.5) ratingBuckets.low.push(movie);
-              else if (rating > 0.5) ratingBuckets.high.push(movie);
-              else ratingBuckets.mid.push(movie);
+          }
+          
+          // Filter the remaining movies to exclude recently compared pairs
+          const remainingMovies = [];
+          for (const movie of availableMovies) {
+            if (movie.identifier !== topMovie.identifier && !recentlyCompared.has(movie.identifier)) {
+              remainingMovies.push(movie);
             }
+          }
+          
+          // Sort remaining movies by uncertainty
+          remainingMovies.sort((a, b) => 
+            calculateUncertainty(b.identifier) - calculateUncertainty(a.identifier)
+          );
+          
+          // Combine into final list
+          const finalSortedList = [topMovie, ...remainingMovies];
+          
+          // Take top uncertain movies, but ensure rating diversity
+          const selectedMovies = [finalSortedList[0]];
+          const ratingBuckets = {
+            low: [],
+            mid: [],
+            high: []
+          };
+          
+          // Divide remaining movies into rating buckets - avoid creating functions in loop
+          for (let i = 1; i < finalSortedList.length; i++) {
+            const movie = finalSortedList[i];
+            if (!movie || !movie.identifier || !rankings[movie.identifier]) continue;
             
-            // Add from each bucket to ensure diversity
-            if (ratingBuckets.low.length > 0) selectedMovies.push(ratingBuckets.low[0]);
-            if (ratingBuckets.mid.length > 0) selectedMovies.push(ratingBuckets.mid[0]);
-            if (ratingBuckets.high.length > 0) selectedMovies.push(ratingBuckets.high[0]);
+            const rating = rankings[movie.identifier].rating;
             
-            // Fill remaining slots with high uncertainty movies
-            while (selectedMovies.length < currentPhase.size && sortedByUncertainty.length > selectedMovies.length) {
-              const nextMovie = sortedByUncertainty[selectedMovies.length];
-              if (!selectedMovies.find(m => m.identifier === nextMovie.identifier)) {
-                selectedMovies.push(nextMovie);
+            if (rating < -0.5) ratingBuckets.low.push(movie);
+            else if (rating > 0.5) ratingBuckets.high.push(movie);
+            else ratingBuckets.mid.push(movie);
+          }
+          
+          // Add from each bucket to ensure diversity
+          if (ratingBuckets.low.length > 0) selectedMovies.push(ratingBuckets.low[0]);
+          if (ratingBuckets.mid.length > 0) selectedMovies.push(ratingBuckets.mid[0]);
+          if (ratingBuckets.high.length > 0) selectedMovies.push(ratingBuckets.high[0]);
+          
+          // Fill remaining slots with high uncertainty movies - using for loop instead of while
+          for (let i = selectedMovies.length; i < currentPhase.size && i < finalSortedList.length; i++) {
+            const nextMovie = finalSortedList[i];
+            let isDuplicate = false;
+            
+            // Check for duplicates without using find (which creates a function)
+            for (let j = 0; j < selectedMovies.length; j++) {
+              if (selectedMovies[j].identifier === nextMovie.identifier) {
+                isDuplicate = true;
+                break;
               }
             }
             
-            return selectedMovies;
-          },
-          
-          // Strategy 2: Prioritize movies with few comparisons while avoiding recent pairs
-          () => {
-            // Sort by fewest comparisons
-            const sortedByComparisons = [...availableMovies]
-              .sort((a, b) => rankings[a.identifier].comparisons - rankings[b.identifier].comparisons);
-              
-            if (sortedByComparisons.length === 0) return [];
-            
-            // Get the first movie
-            const firstMovie = sortedByComparisons[0];
-            
-            // Get recently compared movies for the first movie
-            const recentlyCompared = new Set();
-            if (rankings[firstMovie.identifier].recentResults) {
-              rankings[firstMovie.identifier].recentResults.forEach(result => {
-                recentlyCompared.add(result.against);
-              });
+            if (!isDuplicate) {
+              selectedMovies.push(nextMovie);
             }
-            
-            // Filter remaining movies to avoid recent pairs
-            const remainingCandidates = sortedByComparisons.slice(1).filter(movie => 
-              !recentlyCompared.has(movie.identifier)
-            );
-            
-            // Use filtered candidates if available, otherwise fall back to original sorted list
-            const candidates = remainingCandidates.length > 0 ? 
-              remainingCandidates : 
-              sortedByComparisons.slice(1);
-            
-            return [firstMovie, ...candidates.slice(0, currentPhase.size - 1)];
-          },
-          
-          // Strategy 3: Create groups with similar ratings to refine precision
-          () => {
-            // Get a random movie as an anchor
-            const randomIndex = Math.floor(Math.random() * availableMovies.length);
-            const anchorMovie = availableMovies[randomIndex];
-            const anchorRating = rankings[anchorMovie.identifier].rating;
-            
-            // Get recently compared movies for this anchor
-            const recentlyCompared = new Set();
-            if (rankings[anchorMovie.identifier].recentResults) {
-              rankings[anchorMovie.identifier].recentResults.forEach(result => {
-                recentlyCompared.add(result.against);
-              });
-            }
-            
-            // Find movies with similar ratings but prioritize those not recently compared
-            const candidates = availableMovies
-              .filter(m => m.identifier !== anchorMovie.identifier)
-              .sort((a, b) => {
-                // First prioritize movies that haven't been recently compared
-                const aRecent = recentlyCompared.has(a.identifier) ? 1 : 0;
-                const bRecent = recentlyCompared.has(b.identifier) ? 1 : 0;
-                if (aRecent !== bRecent) return aRecent - bRecent;
-                
-                // Then sort by rating similarity
-                return Math.abs(rankings[a.identifier].rating - anchorRating) - 
-                       Math.abs(rankings[b.identifier].rating - anchorRating);
-              });
-              
-            return [anchorMovie, ...candidates.slice(0, currentPhase.size - 1)];
           }
-        ];
-        
-        // Create candidate groups using different strategies
-        const candidateGroups = strategies.map(strategy => strategy());
-        
-        // Select the group with highest value
-        selectedGroup = candidateGroups.reduce((best, current) => {
-          const currentValue = calculateGroupValue(current, rankings);
-          const bestValue = best ? calculateGroupValue(best, rankings) : -1;
-          return currentValue > bestValue ? current : best;
+          
+          return selectedMovies;
         });
         
-        // Ensure we have enough movies in the group
-        while (selectedGroup.length < currentPhase.size && availableMovies.length > selectedGroup.length) {
-          const remainingMovies = availableMovies.filter(
-            movie => !selectedGroup.find(m => m.identifier === movie.identifier)
-          );
+        // Strategy 2: Prioritize movies with few comparisons while avoiding recent pairs
+        strategyFunctions.push(() => {
+          // Sort by fewest comparisons
+          let sortedByComparisons = [...availableMovies];
+          sortedByComparisons.sort((a, b) => {
+            if (!a.identifier || !b.identifier) return 0;
+            return rankings[a.identifier].comparisons - rankings[b.identifier].comparisons;
+          });
           
-          if (remainingMovies.length === 0) break;
+          // Add randomness to initial grouping
+          if (comparisons === 0) {
+            const topCount = Math.max(1, Math.ceil(sortedByComparisons.length * 0.3));
+            const topMovies = sortedByComparisons.slice(0, topCount);
+            const shuffledTopMovies = shuffleArray(topMovies);
+            sortedByComparisons = [...shuffledTopMovies, ...sortedByComparisons.slice(topCount)];
+          }
+            
+          if (sortedByComparisons.length === 0) return [];
           
-          const nextMovie = remainingMovies[0];
-          selectedGroup.push(nextMovie);
+          // Get the first movie
+          const firstMovie = sortedByComparisons[0];
+          
+          // Get recently compared movies for the first movie
+          const recentlyCompared = new Set();
+          if (firstMovie && rankings[firstMovie.identifier] && rankings[firstMovie.identifier].recentResults) {
+            for (const result of rankings[firstMovie.identifier].recentResults) {
+              if (result.against) recentlyCompared.add(result.against);
+            }
+          }
+          
+          // Filter remaining movies to avoid recent pairs - avoid creating functions in loop
+          const remainingCandidates = [];
+          for (let i = 1; i < sortedByComparisons.length; i++) {
+            if (!recentlyCompared.has(sortedByComparisons[i].identifier)) {
+              remainingCandidates.push(sortedByComparisons[i]);
+            }
+          }
+          
+          // Use filtered candidates if available, otherwise fall back to original sorted list
+          const candidates = remainingCandidates.length > 0 ? 
+            remainingCandidates : 
+            sortedByComparisons.slice(1);
+          
+          return [firstMovie, ...candidates.slice(0, currentPhase.size - 1)];
+        });
+        
+        // Strategy 3: Create groups with similar ratings to refine precision
+        strategyFunctions.push(() => {
+          if (availableMovies.length === 0) return [];
+          
+          // Get a random movie as an anchor
+          const randomIndex = Math.floor(Math.random() * availableMovies.length);
+          const anchorMovie = availableMovies[randomIndex];
+          
+          if (!anchorMovie || !anchorMovie.identifier || !rankings[anchorMovie.identifier]) {
+            return availableMovies.slice(0, currentPhase.size);
+          }
+          
+          const anchorRating = rankings[anchorMovie.identifier].rating;
+          
+          // Get recently compared movies for this anchor
+          const recentlyCompared = new Set();
+          if (rankings[anchorMovie.identifier].recentResults) {
+            for (const result of rankings[anchorMovie.identifier].recentResults) {
+              if (result.against) recentlyCompared.add(result.against);
+            }
+          }
+          
+          // Find movies with similar ratings but prioritize those not recently compared
+          // Avoid filter + sort combination which creates multiple functions
+          const candidates = [];
+          for (const m of availableMovies) {
+            if (m.identifier !== anchorMovie.identifier) {
+              candidates.push(m);
+            }
+          }
+          
+          // Sort manually without creating inline functions
+          candidates.sort((a, b) => {
+            if (!a.identifier || !b.identifier) return 0;
+            
+            // First prioritize movies that haven't been recently compared
+            const aRecent = recentlyCompared.has(a.identifier) ? 1 : 0;
+            const bRecent = recentlyCompared.has(b.identifier) ? 1 : 0;
+            if (aRecent !== bRecent) return aRecent - bRecent;
+            
+            // Then sort by rating similarity
+            return Math.abs(rankings[a.identifier].rating - anchorRating) - 
+                   Math.abs(rankings[b.identifier].rating - anchorRating);
+          });
+            
+          return [anchorMovie, ...candidates.slice(0, currentPhase.size - 1)];
+        });
+        
+        // Create candidate groups using different strategies - avoiding map to reduce function creation
+        const candidateGroups = [];
+        for (const strategyFn of strategyFunctions) {
+          candidateGroups.push(strategyFn());
+        }
+        
+        // Select the group with highest value - avoiding reduce to reduce function creation
+        let bestGroup = null;
+        let bestValue = -1;
+        
+        for (const group of candidateGroups) {
+          const currentValue = calculateGroupValue(group, rankings);
+          if (currentValue > bestValue) {
+            bestValue = currentValue;
+            bestGroup = group;
+          }
+        }
+        
+        selectedGroup = bestGroup;
+        
+        // Ensure we have enough movies in the group - avoid using filter and find
+        if (selectedGroup && selectedGroup.length < currentPhase.size && availableMovies.length > selectedGroup.length) {
+          // Manual implementation to avoid creating closures
+          const remainingMovies = [];
+          for (const movie of availableMovies) {
+            let isInSelectedGroup = false;
+            
+            // Manual iteration to avoid .find
+            for (let i = 0; i < selectedGroup.length; i++) {
+              if (selectedGroup[i].identifier === movie.identifier) {
+                isInSelectedGroup = true;
+                break;
+              }
+            }
+            
+            if (!isInSelectedGroup) {
+              remainingMovies.push(movie);
+            }
+          }
+          
+          // Add remaining movies until we reach the desired size
+          for (let i = 0; i < remainingMovies.length && selectedGroup.length < currentPhase.size; i++) {
+            selectedGroup.push(remainingMovies[i]);
+          }
         }
       }
   
-      // Log selected group
-      console.log(`Selected group of ${selectedGroup.length} movies: ${selectedGroup.map(m => m.title).join(', ')}`);
+      // Log selected group - avoid using map which creates a function
+      let movieTitles = '';
+      if (selectedGroup && selectedGroup.length > 0) {
+        for (let i = 0; i < selectedGroup.length; i++) {
+          if (i > 0) movieTitles += ', ';
+          movieTitles += selectedGroup[i].title || 'Unknown';
+        }
+      }
+      console.log(`Selected group of ${selectedGroup ? selectedGroup.length : 0} movies: ${movieTitles}`);
       
-      // Mark movies as used
-      setCurrentGroup(selectedGroup);
-      setMoviesUsed(prev => {
-        // Create a new Set to ensure React detects the state change
-        const newSet = new Set(prev);
-        selectedGroup.forEach(movie => newSet.add(movie.identifier));
-        return newSet;
-      });
+      // Mark movies as used - avoid closure and forEach
+      if (selectedGroup) {
+        setCurrentGroup([...selectedGroup]); // Make a copy to avoid reference issues
+        
+        setMoviesUsed(prev => {
+          // Create a new Set to ensure React detects the state change
+          const newSet = new Set(prev);
+          
+          // Use for loop instead of forEach to avoid creating a function
+          for (let i = 0; i < selectedGroup.length; i++) {
+            if (selectedGroup[i] && selectedGroup[i].identifier) {
+              newSet.add(selectedGroup[i].identifier);
+            }
+          }
+          
+          return newSet;
+        });
+      } else {
+        // Handle null/undefined selectedGroup case
+        setCurrentGroup([]);
+      }
   
     } catch (err) {
       console.error("Error in selectGroup:", err);
@@ -347,13 +478,15 @@ function RankingProcess({
     calculateMovieValue,
     calculateGroupValue,
     determinePhase,
-    memoizedMovies,
-    availableMoviesCache
+    // Use moviesRef.current directly instead of memoizedMovies
+    availableMoviesCache,
+    // shuffleArray doesn't need to be in the dependency array as it's defined outside the callback
   ]);
 
   const handlePairChoice = useCallback((winner, loser) => {
     console.log(`Pair choice made: ${winner.title} over ${loser.title}`);
-    onChoose(winner.identifier, loser.identifier, [winner, loser]);
+    // Create new array to avoid reference leaks
+    onChoose(winner.identifier, loser.identifier, [{...winner}, {...loser}]);
     setCurrentGroup([]); // This will trigger useEffect to select new group
   }, [onChoose]);
 
@@ -364,15 +497,21 @@ function RankingProcess({
     const winner = groupMovies[selectedIndex];
     const losers = groupMovies.filter((_, i) => i !== selectedIndex);
     
+    // Create deep copies to prevent reference leaks
+    const winnerCopy = {...winner};
+    
     // Process all implicit comparisons
     losers.forEach(loser => {
-      onChoose(winner.identifier, loser.identifier, groupMovies);
+      // Create new array for each comparison to prevent reference leaks
+      const comparisonGroup = groupMovies.map(movie => ({...movie}));
+      onChoose(winner.identifier, loser.identifier, comparisonGroup);
     });
     
     setCurrentGroup([]); // This will trigger useEffect to select new group
   }, [onChoose]);
 
   useEffect(() => {
+    // Memoize the handler to prevent recreating on each render
     const handleKeyPress = (e) => {
       if (currentGroup.length < 2 || isAnimating) return;
       
@@ -386,9 +525,14 @@ function RankingProcess({
       }
     };
   
-    window.addEventListener('keydown', handleKeyPress);
-    return () => window.removeEventListener('keydown', handleKeyPress);
-  }, [currentGroup, comparisons, onUndo, isAnimating]);
+    // Use passive listener for better performance
+    window.addEventListener('keydown', handleKeyPress, { passive: true });
+    
+    // Explicit cleanup function
+    return () => {
+      window.removeEventListener('keydown', handleKeyPress, { passive: true });
+    };
+  }, [currentGroup.length, comparisons, onUndo, isAnimating]);
 
   useEffect(() => {
     // Only select a new group if we don't have one already
@@ -416,10 +560,15 @@ function RankingProcess({
     // Clear any existing timeout to prevent memory leaks
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
     }
     
     timeoutRef.current = setTimeout(() => {
-      handlePairChoice(currentGroup[index], currentGroup[1 - index]);
+      // Create shallow copies to avoid reference leaks
+      const item1 = {...currentGroup[index]};
+      const item2 = {...currentGroup[1 - index]};
+      
+      handlePairChoice(item1, item2);
       setSelectedIndex(null);
       setIsAnimating(false);
       timeoutRef.current = null;

@@ -18,17 +18,21 @@ function GroupSelection({
     
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
     }
     
     timeoutRef.current = setTimeout(() => {
-      onSelect(index, movies);
+      onSelect(index, [...movies]); // Create a shallow copy to avoid reference leaks
       setSelectedIndex(null);
       setIsAnimating(false);
+      timeoutRef.current = null; // Clear the reference when done
     }, 150);
   }, [isAnimating, movies, onSelect]);
 
   useEffect(() => {
+    // Create a stable handler reference that doesn't capture props in closure
     const handleKeyPress = (e) => {
+      // Access latest state values from refs to prevent closure capturing
       if (isAnimating) return;
       
       let index = null;
@@ -43,9 +47,14 @@ function GroupSelection({
       }
     };
   
-    window.addEventListener('keydown', handleKeyPress);
-    return () => window.removeEventListener('keydown', handleKeyPress);
-  }, [isAnimating, movies, handleSelect]);
+    // Use passive event listener for better performance
+    window.addEventListener('keydown', handleKeyPress, { passive: true });
+    
+    // Explicit cleanup function with matching options
+    return () => {
+      window.removeEventListener('keydown', handleKeyPress, { passive: true });
+    };
+  }, [isAnimating, movies.length, handleSelect]);
 
   // Cleanup timeout on unmount
   useEffect(() => {

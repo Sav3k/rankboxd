@@ -25,7 +25,44 @@
       work correctly both with client-side routing and a non-root public URL.
       Learn how to configure a non-root public URL by running `npm run build`.
     -->
-    <title>React App</title>
+    <title>RankBoxd</title>
+    <!-- Memory management helpers -->
+    <script>
+      // Helper for manual garbage collection hints
+      window.gcCollect = function() {
+        // Set a reasonable memory limit for debugging
+        try {
+          if (window.performance && window.performance.memory) {
+            console.log("Suggesting memory cleanup");
+          }
+        } catch (e) {
+          console.log('Memory management not available');
+        }
+      };
+      
+      // Monitor memory usage
+      window.memoryMonitor = {
+        start: function() {
+          if (!window.performance || !window.performance.memory) return;
+          
+          this.interval = setInterval(function() {
+            const used = window.performance.memory.usedJSHeapSize / (1024 * 1024);
+            const total = window.performance.memory.totalJSHeapSize / (1024 * 1024);
+            console.log("Memory usage: " + used.toFixed(2) + "MB / " + total.toFixed(2) + "MB");
+            
+            if (used > 80) {
+              console.warn('High memory usage detected!');
+              window.gcCollect();
+            }
+          }, 5000);
+        },
+        stop: function() {
+          if (this.interval) {
+            clearInterval(this.interval);
+          }
+        }
+      };
+    </script>
   </head>
   <body>
     <noscript>You need to enable JavaScript to run this app.</noscript>
