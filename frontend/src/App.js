@@ -69,7 +69,108 @@ const calculateAdaptiveThresholds = (movieCount, progress) => {
   };
 };
 
+// Advanced cache for transitivity calculations with positional context and dependency tracking
+class TransitivityCache {
+  constructor() {
+    this.cache = new Map(); // Main result cache
+    this.dependencies = new Map(); // Tracks which movies affect each cache entry
+    this.movieRelationships = new Map(); // Tracks relationships between movies for invalidation
+  }
+  
+  // Get a cached result if available
+  get(movieId, position) {
+    const cacheKey = `${movieId}_${position}`;
+    return this.cache.get(cacheKey);
+  }
+  
+  // Check if a result is cached
+  has(movieId, position) {
+    const cacheKey = `${movieId}_${position}`;
+    return this.cache.has(cacheKey);
+  }
+  
+  // Store a result and its dependencies
+  set(movieId, position, result, triads) {
+    const cacheKey = `${movieId}_${position}`;
+    this.cache.set(cacheKey, result);
+    
+    // Store dependencies for this cache entry
+    this.dependencies.set(cacheKey, new Set(triads));
+    
+    // Update relationship tracking for each involved movie
+    triads.forEach(triad => {
+      triad.forEach(id => {
+        if (!this.movieRelationships.has(id)) {
+          this.movieRelationships.set(id, new Set());
+        }
+        // Link this movie to the cache entry
+        this.movieRelationships.get(id).add(cacheKey);
+      });
+    });
+  }
+  
+  // Selectively invalidate cache entries when a movie's rating or results change
+  invalidateMovie(movieId) {
+    // Find all cache entries that depend on this movie
+    const affectedCacheKeys = this.movieRelationships.get(movieId);
+    if (affectedCacheKeys) {
+      // Invalidate each affected cache entry
+      affectedCacheKeys.forEach(key => {
+        this.cache.delete(key);
+        
+        // Clean up dependency entries for invalidated items
+        const dependencies = this.dependencies.get(key);
+        if (dependencies) {
+          dependencies.forEach(triad => {
+            triad.forEach(id => {
+              const relationships = this.movieRelationships.get(id);
+              if (relationships) {
+                relationships.delete(key);
+              }
+            });
+          });
+        }
+        this.dependencies.delete(key);
+      });
+    }
+  }
+  
+  // Clear the entire cache
+  clear() {
+    this.cache.clear();
+    this.dependencies.clear();
+    this.movieRelationships.clear();
+  }
+  
+  // Get statistics about the cache (for debugging/monitoring)
+  getStats() {
+    return {
+      cacheSize: this.cache.size,
+      dependendencyTrackedMovies: this.movieRelationships.size,
+      totalDependencies: this.dependencies.size
+    };
+  }
+}
+
+// Create an instance of the enhanced transitivity cache
+const transitivityCache = new TransitivityCache();
+
+// Helper function to clear transitivity cache
+const clearTransitivityCache = () => {
+  transitivityCache.clear();
+};
+
+// Helper to selectively invalidate cache entries for specific movies
+const invalidateTransitivityCache = (movieId) => {
+  transitivityCache.invalidateMovie(movieId);
+};
+
 const calculateLocalTransitivity = (movieId, rankings, sortedMovies, position) => {
+  // Check if the result is already cached
+  if (transitivityCache.has(movieId, position)) {
+    return transitivityCache.get(movieId, position);
+  }
+  
   const localRange = CONFIDENCE_CONSTANTS.LOCAL_RANGE;
   const start = Math.max(0, position - localRange);
   const end = Math.min(sortedMovies.length, position + localRange + 1);
@@ -77,12 +178,16 @@ const calculateLocalTransitivity = (movieId, rankings, sortedMovies, position) =
   
   let weightedTransitivity = 0;
   let totalWeight = 0;
+  const processedTriads = []; // Track processed triads for dependency tracking
   
   for (let i = 0; i < localMovies.length - 2; i++) {
     for (let j = i + 1; j < localMovies.length - 1; j++) {
       for (let k = j + 1; k < localMovies.length; k++) {
         const [a, b, c] = [localMovies[i], localMovies[j], localMovies[k]]
           .map(m => m.movie.identifier);
+          
+        // Store this triad for dependency tracking
+        processedTriads.push([a, b, c]);
           
         // Calculate positional weight (closer positions matter more)
         const posWeight = 1 / (Math.abs(position - i) + 1);
@@ -111,13 +216,29 @@ const calculateLocalTransitivity = (movieId, rankings, sortedMovies, position) =
     }
   }
   
-  return totalWeight > 0 ? weightedTransitivity / totalWeight : 0.5;
+  const result = totalWeight > 0 ? weightedTransitivity / totalWeight : 0.5;
+  
+  // Cache the result with dependency information
+  transitivityCache.set(movieId, position, result, processedTriads);
+  
+  return result;
 };
+
+// Cache for enhanced confidence intermediate calculations
+const enhancedConfidenceCache = new Map();
 
 const calculateEnhancedConfidence = (movieId, rankings, allMovies) => {
   const record = rankings[movieId];
   if (!record || record.comparisons < CONFIDENCE_CONSTANTS.MIN_COMPARISONS) {
     return 0.2; // Minimum baseline confidence of 20%
+  }
+
+  // Create cache keys for the expensive parts
+  const cacheKey = `${movieId}_${record.comparisons}_${record.wins}_${record.rating.toFixed(4)}`;
+  
+  // Check if we already calculated this exact configuration
+  if (enhancedConfidenceCache.has(cacheKey)) {
+    return enhancedConfidenceCache.get(cacheKey);
   }
 
   // 1. Base Comparison Confidence (0-1)
@@ -131,6 +252,7 @@ const calculateEnhancedConfidence = (movieId, rankings, allMovies) => {
   const bayesianConfidence = 1 - Math.min(record.ratingUncertainty, 1);
 
   // 3. Position-Aware Consistency (0-1)
+  // Sorting is expensive - only do once and cache the result
   const sortedMovies = Object.values(rankings).sort((a, b) => b.rating - a.rating);
   const position = sortedMovies.findIndex(r => r.movie.identifier === movieId);
   const relativePosition = position / sortedMovies.length;
@@ -196,7 +318,7 @@ const calculateEnhancedConfidence = (movieId, rankings, allMovies) => {
     (recentConsistency * CONFIDENCE_CONSTANTS.RECENT_WEIGHT) +
     (historicalConsistency * CONFIDENCE_CONSTANTS.HISTORICAL_WEIGHT);
 
-  // 7. Transitivity Score (0-1)
+  // 7. Transitivity Score (0-1) - this function is already cached internally
   const transitivityScore = calculateLocalTransitivity(
     movieId, 
     rankings, 
@@ -215,8 +337,13 @@ const calculateEnhancedConfidence = (movieId, rankings, allMovies) => {
     transitivityScore * 0.10
   );
 
-  // Ensure minimum confidence of 20% and maximum of 100%
-  return Math.min(Math.max(finalConfidence, 0.2), 1);
+  // Final confidence value
+  const result = Math.min(Math.max(finalConfidence, 0.2), 1);
+  
+  // Store in cache
+  enhancedConfidenceCache.set(cacheKey, result);
+  
+  return result;
 };
 
 const calculateComparisonImpact = (movieA, movieB, rankings, progress) => {
@@ -271,6 +398,8 @@ function App() {
     inconsistencyCorrectionsMade: 0
   });
   const globalRecalculationRef = useRef(false);
+  const prevRankingsRef = useRef(null);
+  const prevMoviesCountRef = useRef(0);
 
   const CONVERGENCE_CHECK_WINDOW = 10;
   const BASE_LEARNING_RATE = 0.1;
@@ -321,8 +450,71 @@ function App() {
     RELATIVE_RANK_STABILITY: 0.9
   };
 
+  // Implement confidence score caching with memoization
+  // Cache for confidence scores
+  const confidenceCache = useRef(new Map());
+  
+  // Enhanced cache that stores both confidence and transitivity results
+  // Selectively clear cache when rankings change
+  useEffect(() => {
+    // Full cache clear is only needed when movies array changes (add/remove)
+    if (Object.keys(rankings).length !== prevMoviesCountRef.current) {
+      confidenceCache.current.clear();
+      clearTransitivityCache(); // Full clear transitivity cache
+      enhancedConfidenceCache.clear(); // Full clear enhanced confidence cache
+      console.log('All confidence caches cleared due to movie count change');
+      prevMoviesCountRef.current = Object.keys(rankings).length;
+      return;
+    }
+    
+    // For rating changes, selectively invalidate only affected movies
+    if (prevRankingsRef.current) {
+      const changedMovies = [];
+      
+      // Find which movies have changed ratings
+      Object.keys(rankings).forEach(movieId => {
+        if (prevRankingsRef.current[movieId] && 
+            rankings[movieId].rating !== prevRankingsRef.current[movieId].rating) {
+          changedMovies.push(movieId);
+          
+          // Clear confidence cache for this movie
+          confidenceCache.current.delete(movieId);
+          
+          // Selectively invalidate transitivity cache for this movie
+          invalidateTransitivityCache(movieId);
+          
+          // Clear enhanced confidence cache entries that depend on this movie
+          // For simplicity, we'll just remove entries that have this movie's ID in the key
+          Array.from(enhancedConfidenceCache.keys()).forEach(key => {
+            if (key.includes(movieId)) {
+              enhancedConfidenceCache.delete(key);
+            }
+          });
+        }
+      });
+      
+      if (changedMovies.length > 0) {
+        console.log(`Selectively cleared cache for ${changedMovies.length} changed movies`);
+      }
+    }
+    
+    // Store current rankings for next comparison
+    prevRankingsRef.current = JSON.parse(JSON.stringify(rankings));
+  }, [rankings, movies]); // Only reset when rankings or movies change
+  
   const calculateConfidence = useCallback((movieId) => {
-    return calculateEnhancedConfidence(movieId, rankings, movies);
+    // Check if result is already in cache
+    if (confidenceCache.current.has(movieId)) {
+      return confidenceCache.current.get(movieId);
+    }
+    
+    // Calculate if not cached
+    const confidence = calculateEnhancedConfidence(movieId, rankings, movies);
+    
+    // Store in cache
+    confidenceCache.current.set(movieId, confidence);
+    
+    return confidence;
   }, [rankings, movies]);
 
   const calculateBatchParameters = useCallback((movieCount) => {
@@ -1045,6 +1237,36 @@ function App() {
       // Update rankings if corrections were made
       if (correctionsMade > 0) {
         console.log(`Applied ${correctionsMade} corrections (${directComparisonFixed} direct comparison, ${transitivityFixed} transitivity)`);
+        
+        // Track which movies were changed for selective cache invalidation
+        const changedMovieIds = new Set();
+        
+        // Find all movies whose ratings changed
+        Object.keys(updatedRankings).forEach(movieId => {
+          if (rankings[movieId].rating !== updatedRankings[movieId].rating) {
+            changedMovieIds.add(movieId);
+          }
+        });
+        
+        // Selectively invalidate caches for changed movies before updating rankings
+        changedMovieIds.forEach(movieId => {
+          // Invalidate confidence cache
+          confidenceCache.current.delete(movieId);
+          
+          // Selectively invalidate transitivity cache
+          invalidateTransitivityCache(movieId);
+          
+          // Clear enhanced confidence cache entries
+          Array.from(enhancedConfidenceCache.keys()).forEach(key => {
+            if (key.includes(movieId)) {
+              enhancedConfidenceCache.delete(key);
+            }
+          });
+        });
+        
+        console.log(`Selectively invalidated caches for ${changedMovieIds.size} changed movies during optimization`);
+        
+        // Now update the rankings
         setRankings(updatedRankings);
         
         // Update statistics
@@ -1066,7 +1288,7 @@ function App() {
     } finally {
       globalRecalculationRef.current = false;
     }
-  }, [rankings, comparisons, comparisonHistory, findTransitivityViolations, findDirectComparisonViolations, buildPreferenceGraph, globalOptimizationStats]);
+  }, [rankings, comparisons, comparisonHistory, findTransitivityViolations, findDirectComparisonViolations, buildPreferenceGraph, globalOptimizationStats, invalidateTransitivityCache]);
 
   const checkRankingStability = useCallback(() => {
     const progress = comparisons / maxComparisons;
@@ -1160,6 +1382,7 @@ const processBatchUpdate = useCallback((updates) => {
   setRankings(prevRankings => {
     const newRankings = { ...prevRankings };
     const newMomentum = { ...movieMomentum };
+    const updatedMovies = new Set(); // Track which movies are updated for selective cache invalidation
     
     updates.forEach(({ winner, loser }) => {
       const learningRate = getDynamicLearningRate(winner, loser);
@@ -1264,8 +1487,33 @@ const processBatchUpdate = useCallback((updates) => {
         }]
       };
       
+      // Track which movies were updated for cache invalidation
+      updatedMovies.add(winner);
+      updatedMovies.add(loser);
+      
       setRecentChanges(prev => [...prev.slice(-CONVERGENCE_CHECK_WINDOW + 1), ratingChange]);
     });
+    
+    // Selectively invalidate cache for updated movies
+    updatedMovies.forEach(movieId => {
+      // Invalidate confidence cache
+      confidenceCache.current.delete(movieId);
+      
+      // Selectively invalidate transitivity cache
+      invalidateTransitivityCache(movieId);
+      
+      // Clear relevant enhanced confidence cache entries
+      Array.from(enhancedConfidenceCache.keys()).forEach(key => {
+        if (key.includes(movieId)) {
+          enhancedConfidenceCache.delete(key);
+        }
+      });
+    });
+    
+    // Log cache statistics occasionally
+    if (Math.random() < 0.1) {
+      console.log('Transitivity cache stats:', transitivityCache.getStats());
+    }
     
     setMovieMomentum(newMomentum);
     return newRankings;
@@ -1278,7 +1526,8 @@ const processBatchUpdate = useCallback((updates) => {
   checkConvergence, 
   movieMomentum,
   comparisons,
-  maxComparisons
+  maxComparisons,
+  invalidateTransitivityCache // Add the new cache invalidation function
 ]);
 
 const updateRankings = useCallback((winnerIdentifier, loserIdentifier, currentGroup) => {

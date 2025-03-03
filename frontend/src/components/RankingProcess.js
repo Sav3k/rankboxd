@@ -80,7 +80,18 @@ function RankingProcess({
     return infoGain * usagePenalty;
   }, [calculateUncertainty, calculateConfidence]);
 
-  const calculateGroupValue = useCallback((movies, rankings) => {
+  // Cache for group value calculations
+const groupValueCache = useRef(new Map());
+
+const calculateGroupValue = useCallback((movies, rankings) => {
+    // Create a cache key from movie identifiers (sorted to ensure consistency)
+    const movieIds = movies.map(movie => movie.identifier).sort().join('_');
+    
+    // Check if this exact group has been calculated before
+    if (groupValueCache.current.has(movieIds)) {
+      return groupValueCache.current.get(movieIds);
+    }
+    
     let totalValue = 0;
     let individualSum = 0;
     
@@ -89,26 +100,46 @@ function RankingProcess({
       individualSum += calculateMovieValue(movies[i], rankings, moviesUsed);
     }
     
+    // Cache for pairwise values to avoid recalculation
+    const pairCache = new Map();
+    
     // Calculate value from pairwise relationships
     for (let i = 0; i < movies.length - 1; i++) {
       for (let j = i + 1; j < movies.length; j++) {
         const movieA = movies[i];
         const movieB = movies[j];
         
-        // Value based on rating difference
-        const ratingDiff = Math.abs(
-          rankings[movieA.identifier].rating - rankings[movieB.identifier].rating
-        );
+        // Create a unique pair key (always put smaller ID first to ensure consistency)
+        const pairKey = [movieA.identifier, movieB.identifier].sort().join('_');
         
-        // More value from movies that are close in rating
-        const pairValue = 1 / (ratingDiff + 0.1);
+        // Check if this pair value was already calculated
+        let pairValue;
+        if (pairCache.has(pairKey)) {
+          pairValue = pairCache.get(pairKey);
+        } else {
+          // Value based on rating difference
+          const ratingDiff = Math.abs(
+            rankings[movieA.identifier].rating - rankings[movieB.identifier].rating
+          );
+          
+          // More value from movies that are close in rating
+          pairValue = 1 / (ratingDiff + 0.1);
+          
+          // Store in pair cache for future use
+          pairCache.set(pairKey, pairValue);
+        }
         
         totalValue += pairValue;
       }
     }
     
     // Combine individual values and pairwise relationships
-    return totalValue + individualSum;
+    const result = totalValue + individualSum;
+    
+    // Store in group cache
+    groupValueCache.current.set(movieIds, result);
+    
+    return result;
   }, [calculateMovieValue, moviesUsed]);
 
   // References are already memoized by useRef, no need for additional useMemo
@@ -636,6 +667,8 @@ function RankingProcess({
   useEffect(() => {
     // Only select a new group if we don't have one already
     if (currentGroup.length === 0 && comparisons < maxComparisons) {
+      // Clear pairwise cache when selecting a new group to avoid excessive memory usage
+      // This allows reuse within a single group selection but clears between groups
       selectGroup();
     }
   }, [currentGroup.length, comparisons, maxComparisons, selectGroup]);
@@ -704,11 +737,16 @@ function RankingProcess({
     }
   }, [currentGroup, currentMode, isAnimating, rankings, comparisons, onChoose]);
   
-  // Cleanup timeout on unmount
+  // Cleanup timeout and caches on unmount
   useEffect(() => {
     return () => {
       if (timeoutRef.current) {
         clearTimeout(timeoutRef.current);
+      }
+      
+      // Clear caches to prevent memory leaks
+      if (groupValueCache.current) {
+        groupValueCache.current.clear();
       }
     };
   }, []);
