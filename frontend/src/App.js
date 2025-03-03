@@ -180,37 +180,158 @@ const calculateLocalTransitivity = (movieId, rankings, sortedMovies, position) =
   let totalWeight = 0;
   const processedTriads = []; // Track processed triads for dependency tracking
   
+  // Find high-value triads to prioritize
+  const highValueTriads = [];
+  const targetTriadCount = Math.min(100, Math.floor(localMovies.length * (localMovies.length - 1) * (localMovies.length - 2) / 6));
+  const confidence_threshold = 0.85; // Confidence threshold for early termination
+  
+  // Build a quick lookup for recent comparisons
+  const comparisonLookup = new Map();
+  localMovies.forEach(m => {
+    const id = m.movie.identifier;
+    if (!comparisonLookup.has(id)) {
+      comparisonLookup.set(id, new Set());
+    }
+    const opponents = comparisonLookup.get(id);
+    rankings[id].recentResults.forEach(r => {
+      if (r.opponent) opponents.add(r.opponent);
+    });
+  });
+  
+  // Check if two movies have been directly compared
+  const hasDirectComparison = (idA, idB) => {
+    return comparisonLookup.has(idA) && comparisonLookup.get(idA).has(idB);
+  };
+  
+  // Prioritize triads with closer rating differences
   for (let i = 0; i < localMovies.length - 2; i++) {
     for (let j = i + 1; j < localMovies.length - 1; j++) {
+      const a = localMovies[i].movie.identifier;
+      const b = localMovies[j].movie.identifier;
+      
+      // Skip if no direct comparison exists
+      if (!hasDirectComparison(a, b)) continue;
+      
       for (let k = j + 1; k < localMovies.length; k++) {
-        const [a, b, c] = [localMovies[i], localMovies[j], localMovies[k]]
-          .map(m => m.movie.identifier);
+        const c = localMovies[k].movie.identifier;
+        
+        // Only consider triads with existing comparison data
+        if (hasDirectComparison(a, c) && hasDirectComparison(b, c)) {
+          // Calculate triad value based on rating differences and position
+          const ratingDiffs = Math.abs(rankings[a].rating - rankings[b].rating) +
+                            Math.abs(rankings[b].rating - rankings[c].rating) +
+                            Math.abs(rankings[a].rating - rankings[c].rating);
           
-        // Store this triad for dependency tracking
-        processedTriads.push([a, b, c]);
+          // Calculate positional weight (closer positions matter more)
+          const posWeight = 1 / (Math.abs(position - i) + 1);
           
-        // Calculate positional weight (closer positions matter more)
-        const posWeight = 1 / (Math.abs(position - i) + 1);
-        
-        // Calculate rating difference weight
-        const ratingDiffs = Math.abs(rankings[a].rating - rankings[b].rating) +
-                          Math.abs(rankings[b].rating - rankings[c].rating) +
-                          Math.abs(rankings[a].rating - rankings[c].rating);
-        const ratingWeight = 1 / (1 + ratingDiffs);
-        
-        const weight = posWeight * ratingWeight;
-        
-        if (rankings[a].recentResults.some(r => r.opponent === b || r.opponent === c) &&
-            rankings[b].recentResults.some(r => r.opponent === c)) {
-          totalWeight += weight;
-          if ((rankings[a].rating > rankings[b].rating && 
-               rankings[b].rating > rankings[c].rating && 
-               rankings[a].rating > rankings[c].rating) ||
-              (rankings[c].rating > rankings[b].rating && 
-               rankings[b].rating > rankings[a].rating && 
-               rankings[c].rating > rankings[a].rating)) {
-            weightedTransitivity += weight;
-          }
+          // Calculate overall triad importance
+          const triadValue = posWeight * (1 / (1 + ratingDiffs));
+          
+          highValueTriads.push({
+            indices: [i, j, k],
+            ids: [a, b, c],
+            value: triadValue
+          });
+        }
+      }
+    }
+  }
+  
+  // Sort triads by value (most informative first)
+  highValueTriads.sort((t1, t2) => t2.value - t1.value);
+  
+  // Process triads in order of decreasing value
+  const processedTriadIds = new Set();
+  
+  // Cap the number of triads processed based on available high-value triads
+  const triadsToProcess = Math.min(targetTriadCount, highValueTriads.length);
+  
+  for (let t = 0; t < triadsToProcess; t++) {
+    const triad = highValueTriads[t];
+    const [i, j, k] = triad.indices;
+    const [a, b, c] = triad.ids;
+    
+    // Store this triad for dependency tracking
+    processedTriads.push([a, b, c]);
+    processedTriadIds.add(`${a}_${b}_${c}`);
+    
+    // Calculate positional weight (closer positions matter more)
+    const posWeight = 1 / (Math.abs(position - i) + 1);
+    
+    // Calculate rating difference weight
+    const ratingDiffs = Math.abs(rankings[a].rating - rankings[b].rating) +
+                      Math.abs(rankings[b].rating - rankings[c].rating) +
+                      Math.abs(rankings[a].rating - rankings[c].rating);
+    const ratingWeight = 1 / (1 + ratingDiffs);
+    
+    const weight = posWeight * ratingWeight;
+    
+    // Check for transitivity
+    totalWeight += weight;
+    if ((rankings[a].rating > rankings[b].rating && 
+         rankings[b].rating > rankings[c].rating && 
+         rankings[a].rating > rankings[c].rating) ||
+        (rankings[c].rating > rankings[b].rating && 
+         rankings[b].rating > rankings[a].rating && 
+         rankings[c].rating > rankings[a].rating)) {
+      weightedTransitivity += weight;
+    }
+    
+    // Check for early termination if we've processed enough triads
+    if (t > Math.min(10, triadsToProcess / 4)) {
+      const currentScore = totalWeight > 0 ? weightedTransitivity / totalWeight : 0.5;
+      // If confidence is high enough, we can terminate early
+      if (currentScore > confidence_threshold && t >= Math.min(20, triadsToProcess / 2)) {
+        break;
+      }
+    }
+  }
+  
+  // If we didn't find enough high-value triads, sample random triads to ensure
+  // we have enough data for a reliable calculation
+  if (totalWeight < 1 && localMovies.length > 3) {
+    const additionalTriads = Math.min(20, localMovies.length);
+    for (let sample = 0; sample < additionalTriads; sample++) {
+      // Choose 3 random distinct indices
+      const indices = new Set();
+      while (indices.size < 3) {
+        indices.add(Math.floor(Math.random() * localMovies.length));
+      }
+      
+      const [i, j, k] = [...indices].sort((a, b) => a - b);
+      const [a, b, c] = [
+        localMovies[i].movie.identifier,
+        localMovies[j].movie.identifier,
+        localMovies[k].movie.identifier
+      ];
+      
+      // Skip if already processed
+      const triadKey = `${a}_${b}_${c}`;
+      if (processedTriadIds.has(triadKey)) continue;
+      
+      // Store for dependency tracking
+      processedTriads.push([a, b, c]);
+      processedTriadIds.add(triadKey);
+      
+      // Calculate weights
+      const posWeight = 1 / (Math.abs(position - i) + 1);
+      const ratingDiffs = Math.abs(rankings[a].rating - rankings[b].rating) +
+                         Math.abs(rankings[b].rating - rankings[c].rating) +
+                         Math.abs(rankings[a].rating - rankings[c].rating);
+      const ratingWeight = 1 / (1 + ratingDiffs);
+      const weight = posWeight * ratingWeight;
+      
+      // Only count triads with comparison data
+      if (hasDirectComparison(a, b) && hasDirectComparison(a, c) && hasDirectComparison(b, c)) {
+        totalWeight += weight;
+        if ((rankings[a].rating > rankings[b].rating && 
+             rankings[b].rating > rankings[c].rating && 
+             rankings[a].rating > rankings[c].rating) ||
+            (rankings[c].rating > rankings[b].rating && 
+             rankings[b].rating > rankings[a].rating && 
+             rankings[c].rating > rankings[a].rating)) {
+          weightedTransitivity += weight;
         }
       }
     }
@@ -825,32 +946,44 @@ function App() {
       return sum + (record && record.movie ? calculateConfidence(record.movie.identifier) : 0);
     }, 0) / movieCount;
   
+    // Calculate system uncertainty based on movie uncertainty values
+    const systemUncertainty = Object.values(rankings).reduce((sum, record) => {
+      return sum + (record ? record.ratingUncertainty : 0);
+    }, 0) / movieCount;
+    
     console.log(`Current batch parameters for ${movieCount} movies:`, {
       early: batchParams.EARLY_STAGE_SIZE,
       mid: batchParams.MID_STAGE_SIZE,
       late: batchParams.LATE_STAGE_SIZE,
       progress: progress.toFixed(2),
-      avgConfidence: avgConfidence.toFixed(2)
+      avgConfidence: avgConfidence.toFixed(2),
+      systemUncertainty: systemUncertainty.toFixed(2)
     });
-  
-    // Determine stage based on progress
+    
+    // Adaptive batch size based on system state
+    // Large uncertainty = smaller batches for more frequent updates
+    // Small uncertainty = larger batches for efficiency
+    const uncertaintyScaling = systemUncertainty > 0.5 ? 0.8 : 
+                             systemUncertainty < 0.2 ? 1.3 : 1.0;
+    
+    // Determine stage based on progress with uncertainty scaling
     if (progress < batchParams.EARLY_STAGE_THRESHOLD) {
-      return batchParams.EARLY_STAGE_SIZE;
+      return Math.max(2, Math.round(batchParams.EARLY_STAGE_SIZE * uncertaintyScaling));
     } else if (progress > batchParams.LATE_STAGE_THRESHOLD) {
-      return batchParams.LATE_STAGE_SIZE;
+      return Math.max(3, Math.round(batchParams.LATE_STAGE_SIZE * uncertaintyScaling));
     } else {
       return avgConfidence < batchParams.MIN_CONFIDENCE_THRESHOLD 
-        ? batchParams.EARLY_STAGE_SIZE 
-        : batchParams.MID_STAGE_SIZE;
+        ? Math.max(2, Math.round(batchParams.EARLY_STAGE_SIZE * uncertaintyScaling))
+        : Math.max(3, Math.round(batchParams.MID_STAGE_SIZE * uncertaintyScaling));
     }
-      }, [
-        movies.length, 
-        comparisons, 
-        maxComparisons, 
-        rankings, 
-        calculateConfidence,  // Add this
-        calculateBatchParameters
-      ]);
+  }, [
+    movies.length, 
+    comparisons, 
+    maxComparisons, 
+    rankings, 
+    calculateConfidence,
+    calculateBatchParameters
+  ]);
   
 
   const calculateTransitivityScore = useCallback(() => {
@@ -917,7 +1050,7 @@ function App() {
     return stabilityScore / totalMovies;
   }, [rankings, comparisonHistory, EARLY_TERMINATION.STABILITY_WINDOW]);
   
-  // Detect cycles in the pairwise comparison graph
+  // Detect cycles in the pairwise comparison graph using Tarjan's algorithm for SCC
   const detectPreferenceCycles = useCallback(() => {
     const movieIds = Object.keys(rankings);
     const numMovies = movieIds.length;
@@ -925,66 +1058,322 @@ function App() {
     // Safety checks
     if (numMovies < 3) return []; // Need at least 3 movies to form a cycle
     
-    // Build a directed graph of preferences
+    // Build a directed graph of preferences with adjacency list
     const preferenceGraph = {};
     movieIds.forEach(id => {
       preferenceGraph[id] = [];
     });
     
+    // Calculate preference strengths for targeted search
+    const preferenceStrengths = new Map();
+    
     // Fill the graph with observed preferences
     for (const comparison of comparisonHistory) {
       const { winner, loser } = comparison;
       if (!preferenceGraph[winner]) continue;
+      
+      // Add the edge if it doesn't exist
       if (!preferenceGraph[winner].includes(loser)) {
         preferenceGraph[winner].push(loser);
+        
+        // Calculate edge strength (rating difference)
+        const ratingDiff = Math.abs(rankings[winner]?.rating - rankings[loser]?.rating || 0);
+        const key = `${winner}:${loser}`;
+        // Store the inverse of rating difference - smaller differences have higher priority
+        preferenceStrengths.set(key, 1 / (ratingDiff + 0.1));
       }
     }
     
-    // Function to detect cycles using DFS
-    const detectCycle = (startNode, maxLength) => {
-      const visited = new Set();
-      const path = [];
-      const cycles = [];
+    // Tarjan's algorithm to find Strongly Connected Components (SCCs)
+    // SCCs are groups of nodes where each node is reachable from every other node
+    // Any SCC with more than one node contains at least one cycle
+    const findStronglyConnectedComponents = () => {
+      let index = 0;
+      const indices = new Map();
+      const lowLinks = new Map();
+      const onStack = new Set();
+      const stack = [];
+      const components = [];
       
-      const dfs = (node, depth = 0) => {
-        if (depth > maxLength) return;
+      // Helper function for Tarjan's algorithm
+      const strongConnect = (node) => {
+        // Set the depth index for node
+        indices.set(node, index);
+        lowLinks.set(node, index);
+        index++;
+        stack.push(node);
+        onStack.add(node);
         
-        visited.add(node);
-        path.push(node);
-        
-        for (const neighbor of preferenceGraph[node] || []) {
-          if (neighbor === startNode && depth > 1) {
-            // Cycle found
-            cycles.push([...path]);
-          } else if (!visited.has(neighbor)) {
-            dfs(neighbor, depth + 1);
+        // Consider successors
+        for (const successor of preferenceGraph[node] || []) {
+          if (!indices.has(successor)) {
+            // Successor has not yet been visited; recurse on it
+            strongConnect(successor);
+            lowLinks.set(node, Math.min(lowLinks.get(node), lowLinks.get(successor)));
+          } else if (onStack.has(successor)) {
+            // Successor is on stack and hence in the current SCC
+            lowLinks.set(node, Math.min(lowLinks.get(node), indices.get(successor)));
           }
         }
         
-        path.pop();
-        visited.delete(node);
+        // If node is a root node, pop the stack and generate an SCC
+        if (lowLinks.get(node) === indices.get(node)) {
+          const component = [];
+          let w;
+          do {
+            w = stack.pop();
+            onStack.delete(w);
+            component.push(w);
+          } while (w !== node);
+          
+          // Only store components with more than one node (these contain cycles)
+          if (component.length > 1) {
+            components.push(component);
+          }
+        }
       };
       
-      dfs(startNode);
-      return cycles;
+      // Apply targeted search based on rating inconsistencies
+      // First sort nodes by their potential for cycles
+      const potentialProblems = movieIds.filter(id => {
+        if (!rankings[id]) return false;
+        
+        // Find nodes that have preference inconsistencies
+        // A node has inconsistency if it's rated lower than a movie it beat
+        // or higher than a movie that beat it
+        const hasInconsistency = comparisonHistory.some(comp => 
+          (comp.winner === id && rankings[id].rating < rankings[comp.loser]?.rating) ||
+          (comp.loser === id && rankings[id].rating > rankings[comp.winner]?.rating)
+        );
+        
+        return hasInconsistency;
+      });
+      
+      // Process problem nodes first, then random sample of remaining nodes
+      const priorityNodes = [...potentialProblems];
+      const remainingNodes = movieIds.filter(id => !priorityNodes.includes(id))
+                                      .sort(() => Math.random() - 0.5)
+                                      .slice(0, Math.min(50, numMovies));
+      
+      const nodesToProcess = [...priorityNodes, ...remainingNodes];
+      
+      // Run the algorithm on each node that hasn't been visited
+      for (const node of nodesToProcess) {
+        if (!indices.has(node)) {
+          strongConnect(node);
+        }
+      }
+      
+      return components;
     };
     
-    // Limit the number of cycles we search for to avoid performance issues
-    const sampleMovies = numMovies > 50 ? 
-      movieIds.sort(() => Math.random() - 0.5).slice(0, Math.min(50, numMovies)) : 
-      movieIds;
+    // Find strongly connected components which will contain all cycles
+    const stronglyConnectedComponents = findStronglyConnectedComponents();
     
-    // Detect cycles
+    // Convert SCCs to cycles by finding cyclic paths within each component
     const cycles = [];
-    for (const startNode of sampleMovies) {
-      const nodeCycles = detectCycle(startNode, GLOBAL_OPTIMIZATION.CYCLES_MAX_LENGTH);
-      cycles.push(...nodeCycles);
+    
+    for (const component of stronglyConnectedComponents) {
+      // For larger components, we need a more efficient approach
+      if (component.length > GLOBAL_OPTIMIZATION.CYCLES_MAX_LENGTH + 3) {
+        // For large components, use Johnson's algorithm for finding elementary cycles
+        // We'll implement a simplified version targeting highest priority cycles
+        
+        // First, identify high-conflict edges (smallest rating differences)
+        // These are edges where the actual ratings contradict the preference
+        const highConflictEdges = [];
+        
+        for (const node of component) {
+          for (const succ of preferenceGraph[node] || []) {
+            if (!component.includes(succ)) continue;
+            
+            // Check if this edge represents a conflict (ratings in opposite direction of preference)
+            const ratingConflict = rankings[node] && rankings[succ] && 
+                                  rankings[node].rating <= rankings[succ].rating;
+            
+            if (ratingConflict) {
+              // This is a high priority edge - ratings and preferences disagree
+              highConflictEdges.push({
+                from: node,
+                to: succ,
+                // Higher conflict score for bigger rating contradictions
+                conflictScore: rankings[succ].rating - rankings[node].rating
+              });
+            } else {
+              // Include all edges but with lower priority
+              highConflictEdges.push({
+                from: node,
+                to: succ,
+                conflictScore: 0
+              });
+            }
+          }
+        }
+        
+        // Sort edges by conflict (descending)
+        highConflictEdges.sort((a, b) => b.conflictScore - a.conflictScore);
+        
+        // Keep only the most conflicting edges to simplify the component
+        // For large components, focus on the highest conflict subset
+        const maxEdges = Math.min(component.length * 2, 50);
+        const topConflictEdges = highConflictEdges.slice(0, maxEdges);
+        
+        // Build a subgraph with just these critical edges
+        const criticalSubgraph = {};
+        component.forEach(node => {
+          criticalSubgraph[node] = [];
+        });
+        
+        topConflictEdges.forEach(edge => {
+          if (!criticalSubgraph[edge.from].includes(edge.to)) {
+            criticalSubgraph[edge.from].push(edge.to);
+          }
+        });
+        
+        // Find cycles in this critical subgraph
+        // Use a fast cycle detection algorithm
+        const findCyclesInCriticalSubgraph = () => {
+          // Track best cycles found so far
+          const bestCycles = [];
+          const maxCycles = 20; // Limit to most significant cycles
+          
+          // Find cycles starting from each high-conflict node
+          const startNodes = [...new Set(topConflictEdges
+            .filter(e => e.conflictScore > 0) // Start from nodes with conflicts
+            .map(e => e.from))];
+            
+          // If we don't have any clear conflicts, sample from the component
+          const nodesToCheck = startNodes.length > 0 ? 
+            startNodes : 
+            component.sort(() => Math.random() - 0.5).slice(0, Math.min(5, component.length));
+          
+          for (const startNode of nodesToCheck) {
+            const visited = new Set();
+            const path = [];
+            
+            const dfs = (node, depth = 0) => {
+              if (depth >= GLOBAL_OPTIMIZATION.CYCLES_MAX_LENGTH) return;
+              if (bestCycles.length >= maxCycles) return;
+              
+              visited.add(node);
+              path.push(node);
+              
+              for (const neighbor of criticalSubgraph[node] || []) {
+                if (neighbor === startNode && depth > 1) {
+                  // We found a cycle
+                  const cycle = [...path];
+                  bestCycles.push(cycle);
+                  
+                  if (bestCycles.length >= maxCycles) break;
+                } else if (!visited.has(neighbor)) {
+                  dfs(neighbor, depth + 1);
+                }
+              }
+              
+              path.pop();
+              visited.delete(node);
+            };
+            
+            dfs(startNode, 0);
+            
+            if (bestCycles.length >= maxCycles) break;
+          }
+          
+          return bestCycles;
+        };
+        
+        // Get the most significant cycles from this component
+        const significantCycles = findCyclesInCriticalSubgraph();
+        cycles.push(...significantCycles);
+        
+        // Limit total number of cycles
+        if (cycles.length >= GLOBAL_OPTIMIZATION.CYCLES_DETECTION_SAMPLE) break;
+      } else {
+        // For smaller components, find all elementary cycles
+        const findElementaryCycles = () => {
+          const elementaryCycles = [];
+          const visited = new Map(); // Map node to bool
+          const stack = [];
+          
+          const findCycles = (start, curr, depth) => {
+            if (depth > GLOBAL_OPTIMIZATION.CYCLES_MAX_LENGTH) return;
+            
+            // Mark current as visited
+            visited.set(curr, true);
+            stack.push(curr);
+            
+            for (const neighbor of preferenceGraph[curr] || []) {
+              // If we found start, we have a cycle
+              if (neighbor === start && depth >= 2) {
+                elementaryCycles.push([...stack]);
+              } 
+              // If not visited, recurse
+              else if (!visited.get(neighbor) && component.includes(neighbor)) {
+                findCycles(start, neighbor, depth + 1);
+              }
+            }
+            
+            // Backtrack
+            stack.pop();
+            visited.set(curr, false);
+          };
+          
+          // Try from each node in component
+          for (const node of component) {
+            component.forEach(n => visited.set(n, false));
+            stack.length = 0;
+            findCycles(node, node, 0);
+            
+            // Limit number of cycles per component
+            if (elementaryCycles.length > 20) break;
+          }
+          
+          return elementaryCycles;
+        };
+        
+        cycles.push(...findElementaryCycles());
+      }
       
       // Limit the total number of cycles we process
       if (cycles.length > GLOBAL_OPTIMIZATION.CYCLES_DETECTION_SAMPLE) break;
     }
     
-    return cycles;
+    // Sort cycles by priority based on conflicts and rating violations
+    cycles.sort((a, b) => {
+      const calculateConflictScore = (cycle) => {
+        let score = 0;
+        let ratingViolations = 0;
+        
+        for (let i = 0; i < cycle.length; i++) {
+          const node = cycle[i];
+          const nextNode = cycle[(i + 1) % cycle.length];
+          
+          if (rankings[node] && rankings[nextNode]) {
+            // Check if this edge represents a conflict with current ratings 
+            // (preference direction disagrees with rating order)
+            if (rankings[node].rating <= rankings[nextNode].rating) {
+              // This is a rating violation - preference says node > nextNode 
+              // but ratings say node <= nextNode
+              ratingViolations++;
+              
+              // Higher score for larger contradictions 
+              score += (rankings[nextNode].rating - rankings[node].rating + 0.1) * 10;
+            } else {
+              // Still count non-violations but with lower weight
+              score += 1 / (rankings[node].rating - rankings[nextNode].rating + 0.5);
+            }
+          }
+        }
+        
+        // Heavily weight cycles with more rating violations
+        return (ratingViolations * 100) + (score / cycle.length);
+      };
+      
+      return calculateConflictScore(b) - calculateConflictScore(a);
+    });
+    
+    // Return limited number of highest priority cycles
+    return cycles.slice(0, GLOBAL_OPTIMIZATION.CYCLES_DETECTION_SAMPLE);
   }, [rankings, comparisonHistory]);
   
   // Find and fix transitivity violations
@@ -1379,119 +1768,268 @@ const checkConvergence = useCallback(() => {
 }, [checkRankingStability, finishRanking]);
 
 const processBatchUpdate = useCallback((updates) => {
+  // Sort updates by uncertainty priority - process high uncertainty movies first
+  const sortedUpdates = [...updates].sort((a, b) => {
+    const aUncertainty = Math.max(
+      rankings[a.winner]?.ratingUncertainty || 0,
+      rankings[a.loser]?.ratingUncertainty || 0
+    );
+    const bUncertainty = Math.max(
+      rankings[b.winner]?.ratingUncertainty || 0,
+      rankings[b.loser]?.ratingUncertainty || 0
+    );
+    return bUncertainty - aUncertainty; // Higher uncertainty first
+  });
+  
+  // Detect redundant updates - skip processing duplicates of the same movie pairs
+  const uniqueUpdates = [];
+  const processedPairs = new Set();
+  
+  sortedUpdates.forEach(update => {
+    // Create a unique key for the movie pair (order doesn't matter)
+    const pairKey = [update.winner, update.loser].sort().join('_');
+    
+    // Only process if this pair hasn't been processed yet
+    if (!processedPairs.has(pairKey)) {
+      uniqueUpdates.push(update);
+      processedPairs.add(pairKey);
+    }
+  });
+  
+  console.log(`Processing batch: ${updates.length} total updates, ${uniqueUpdates.length} after deduplication`);
+  
+  // For multiple updates to the same movie, batch them for efficiency
+  const movieUpdates = new Map(); // Map of movieId -> array of updates
+  
+  uniqueUpdates.forEach(update => {
+    // Add to winner's updates
+    if (!movieUpdates.has(update.winner)) {
+      movieUpdates.set(update.winner, { wins: [], losses: [] });
+    }
+    movieUpdates.get(update.winner).wins.push(update.loser);
+    
+    // Add to loser's updates
+    if (!movieUpdates.has(update.loser)) {
+      movieUpdates.set(update.loser, { wins: [], losses: [] });
+    }
+    movieUpdates.get(update.loser).losses.push(update.winner);
+  });
+  
+  // Process the updates with dependency tracking for efficient cache management
   setRankings(prevRankings => {
     const newRankings = { ...prevRankings };
     const newMomentum = { ...movieMomentum };
     const updatedMovies = new Set(); // Track which movies are updated for selective cache invalidation
+    let totalRatingChange = 0;
     
-    updates.forEach(({ winner, loser }) => {
-      const learningRate = getDynamicLearningRate(winner, loser);
+    // Process each movie's cumulative updates
+    movieUpdates.forEach((updates, movieId) => {
+      // Process wins
+      updates.wins.forEach(loser => {
+        const learningRate = getDynamicLearningRate(movieId, loser);
+        
+        if (updates.wins.length === 1) {
+          // Only update UI learning rate for single comparisons
+          setCurrentLearningRate(learningRate);
+        }
+        
+        // Get the adaptive factors for fine-tuning the updates
+        const { 
+          volatilityFactor, 
+          consistencyFactor 
+        } = calculateAdaptiveLearningRate(movieId, loser);
+        
+        // Traditional ELO-style rating update
+        const winnerStrength = Math.exp(prevRankings[movieId].rating);
+        const loserStrength = Math.exp(prevRankings[loser].rating);
+        
+        const expectedProbWinner = winnerStrength / (winnerStrength + loserStrength);
+        const ratingChange = learningRate * (1 - expectedProbWinner);
+        totalRatingChange += ratingChange;
+        
+        // Update momentum with adaptive scaling
+        const momentumScaling = volatilityFactor * consistencyFactor;
+        newMomentum[movieId] = (newMomentum[movieId] || 0) * MOMENTUM_FACTOR + ratingChange * momentumScaling;
+        
+        // Bayesian rating update
+        // Get current uncertainty values
+        const winnerUncertainty = prevRankings[movieId].ratingUncertainty;
+        
+        // Calculate observation strength based on group context and consistency
+        const isGroupComparison = prevRankings[movieId].groupSelections.appearances > 0 || 
+                                prevRankings[loser].groupSelections.appearances > 0;
+        
+        // Adjust observation strength based on group context and adaptive factors
+        const baseObservationStrength = isGroupComparison ? 0.8 : 1.0;
+        const adaptiveObservationStrength = baseObservationStrength * volatilityFactor;
+        
+        // Adaptively adjust uncertainty reduction rate based on progress and consistency
+        const progress = comparisons / maxComparisons;
+        const uncertaintyReductionRate = 0.1 * (
+          progress < 0.3 ? 0.8 : // Slower reduction early on
+          progress > 0.7 ? 1.2 : // Faster reduction late in the process
+          1.0
+        ) * consistencyFactor;  // More consistent results lead to faster reduction
+        
+        // Calculate new uncertainties with adaptive reduction
+        const newWinnerUncertainty = winnerUncertainty * (1 - uncertaintyReductionRate * adaptiveObservationStrength);
+        
+        // Calculate Bayesian adjusted rating changes with adaptive scaling
+        const bayesianWinnerChange = ratingChange * (1 + winnerUncertainty) * adaptiveObservationStrength;
+        
+        // Only initialize once per movie in the batch
+        if (!updatedMovies.has(movieId)) {
+          // Set initial update for this movie
+          newRankings[movieId] = {
+            ...prevRankings[movieId],
+            // Start with base rating
+            rating: prevRankings[movieId].rating,
+            ratingMean: prevRankings[movieId].ratingMean,
+            ratingUncertainty: prevRankings[movieId].ratingUncertainty,
+            wins: prevRankings[movieId].wins,
+            comparisons: prevRankings[movieId].comparisons,
+            recentResults: [...prevRankings[movieId].recentResults]
+          };
+          updatedMovies.add(movieId);
+        }
+        
+        // Incrementally update the movie's rating and stats
+        newRankings[movieId] = {
+          ...newRankings[movieId],
+          // Accumulate rating changes
+          rating: newRankings[movieId].rating + ratingChange,
+          ratingMean: newRankings[movieId].ratingMean + bayesianWinnerChange,
+          ratingUncertainty: Math.max(0.1, newWinnerUncertainty),
+          wins: newRankings[movieId].wins + 1,
+          comparisons: newRankings[movieId].comparisons + 1,
+          recentResults: [...newRankings[movieId].recentResults.slice(-9), {
+            opponent: loser,
+            result: 1,
+            ratingDiff: Math.abs(prevRankings[movieId].rating - prevRankings[loser].rating),
+            learningRate: learningRate
+          }]
+        };
+      });
       
-      // Store the current learning rate for UI display
-      setCurrentLearningRate(learningRate);
-      
-      // Get the adaptive factors for fine-tuning the updates
-      const { 
-        volatilityFactor, 
-        consistencyFactor 
-      } = calculateAdaptiveLearningRate(winner, loser);
-      
-      // Traditional ELO-style rating update
-      const winnerStrength = Math.exp(prevRankings[winner].rating);
-      const loserStrength = Math.exp(prevRankings[loser].rating);
-      
-      const expectedProbWinner = winnerStrength / (winnerStrength + loserStrength);
-      const ratingChange = learningRate * (1 - expectedProbWinner);
-      
-      // Update momentum with adaptive scaling
-      const momentumScaling = volatilityFactor * consistencyFactor;
-      newMomentum[winner] = (newMomentum[winner] || 0) * MOMENTUM_FACTOR + ratingChange * momentumScaling;
-      newMomentum[loser] = (newMomentum[loser] || 0) * MOMENTUM_FACTOR - ratingChange * momentumScaling;
-      
-      // Bayesian rating update
-      // Get current uncertainty values
-      const winnerUncertainty = prevRankings[winner].ratingUncertainty;
-      const loserUncertainty = prevRankings[loser].ratingUncertainty;
-      
-      // Calculate observation strength based on group context and consistency
-      const isGroupComparison = prevRankings[winner].groupSelections.appearances > 0 || 
-                               prevRankings[loser].groupSelections.appearances > 0;
-      
-      // Adjust observation strength based on group context and adaptive factors
-      const baseObservationStrength = isGroupComparison ? 0.8 : 1.0;
-      const adaptiveObservationStrength = baseObservationStrength * volatilityFactor;
-      
-      // Adaptively adjust uncertainty reduction rate based on progress and consistency
-      const progress = comparisons / maxComparisons;
-      const uncertaintyReductionRate = 0.1 * (
-        progress < 0.3 ? 0.8 : // Slower reduction early on
-        progress > 0.7 ? 1.2 : // Faster reduction late in the process
-        1.0
-      ) * consistencyFactor;  // More consistent results lead to faster reduction
-      
-      // Calculate new uncertainties with adaptive reduction
-      const newWinnerUncertainty = winnerUncertainty * (1 - uncertaintyReductionRate * adaptiveObservationStrength);
-      const newLoserUncertainty = loserUncertainty * (1 - uncertaintyReductionRate * adaptiveObservationStrength);
-      
-      // Calculate Bayesian adjusted rating changes with adaptive scaling
-      const bayesianWinnerChange = ratingChange * (1 + winnerUncertainty) * adaptiveObservationStrength;
-      const bayesianLoserChange = ratingChange * (1 + loserUncertainty) * adaptiveObservationStrength;
-      
-      // Log the learning rate and adaptive factors for debugging
-      if (Math.random() < 0.05) { // Only log occasionally (5% of updates)
-        console.log(`Learning rate adaptation for ${winner} vs ${loser}:`, {
-          learningRate: learningRate.toFixed(4),
-          volatility: volatilityFactor.toFixed(2),
-          consistency: consistencyFactor.toFixed(2),
-          observationStrength: adaptiveObservationStrength.toFixed(2),
-          uncertaintyReduction: uncertaintyReductionRate.toFixed(2)
-        });
+      // Apply momentum after all individual updates
+      if (updates.wins.length > 0 || updates.losses.length > 0) {
+        // Apply momentum as a single adjustment at the end
+        newRankings[movieId].rating += newMomentum[movieId] * MOMENTUM_FACTOR;
       }
-      
-      // Update ratings with momentum influence and store opponent info
-      newRankings[winner] = {
-        ...newRankings[winner],
-        // Traditional rating update
-        rating: prevRankings[winner].rating + ratingChange + newMomentum[winner] * MOMENTUM_FACTOR,
-        // Bayesian rating update
-        ratingMean: prevRankings[winner].ratingMean + bayesianWinnerChange,
-        ratingUncertainty: Math.max(0.1, newWinnerUncertainty), // Minimum uncertainty threshold
+    });
+    
+    // Make a second pass for losses to ensure we have the most updated winner ratings
+    movieUpdates.forEach((updates, movieId) => {
+      // Process losses
+      updates.losses.forEach(winner => {
+        const learningRate = getDynamicLearningRate(winner, movieId);
         
-        // Update metrics
-        wins: prevRankings[winner].wins + 1,
-        comparisons: prevRankings[winner].comparisons + 1,
-        recentResults: [...prevRankings[winner].recentResults.slice(-9), {
-          opponent: loser,
-          result: 1,
-          ratingDiff: Math.abs(prevRankings[winner].rating - prevRankings[loser].rating),
-          learningRate: learningRate // Store learning rate for analysis
-        }]
-      };
-      
-      newRankings[loser] = {
-        ...newRankings[loser],
-        // Traditional rating update
-        rating: prevRankings[loser].rating - ratingChange + newMomentum[loser] * MOMENTUM_FACTOR,
-        // Bayesian rating update
-        ratingMean: prevRankings[loser].ratingMean - bayesianLoserChange,
-        ratingUncertainty: Math.max(0.1, newLoserUncertainty), // Minimum uncertainty threshold
+        // Get the adaptive factors for fine-tuning the updates
+        const { 
+          volatilityFactor, 
+          consistencyFactor 
+        } = calculateAdaptiveLearningRate(winner, movieId);
         
-        // Update metrics
-        losses: prevRankings[loser].losses + 1,
-        comparisons: prevRankings[loser].comparisons + 1,
-        recentResults: [...prevRankings[loser].recentResults.slice(-9), {
-          opponent: winner,
-          result: 0,
-          ratingDiff: Math.abs(prevRankings[winner].rating - prevRankings[loser].rating),
-          learningRate: learningRate // Store learning rate for analysis
-        }]
-      };
+        // Use already calculated rating from winner update if available
+        // Otherwise do a new calculation
+        let ratingChange;
+        
+        // If winner was already processed, use consistent rating change
+        if (movieUpdates.has(winner) && movieUpdates.get(winner).wins.includes(movieId)) {
+          // Find matching win that corresponds to this loss
+          const winnerUpdates = uniqueUpdates.find(u => 
+            u.winner === winner && u.loser === movieId);
+          
+          if (winnerUpdates) {
+            // Use the same change amount from the winner's update for consistency
+            const winnerStrength = Math.exp(prevRankings[winner].rating);
+            const loserStrength = Math.exp(prevRankings[movieId].rating);
+            const expectedProbWinner = winnerStrength / (winnerStrength + loserStrength);
+            ratingChange = learningRate * (1 - expectedProbWinner);
+          } else {
+            // Calculate new if not found (shouldn't typically happen)
+            const winnerStrength = Math.exp(prevRankings[winner].rating);
+            const loserStrength = Math.exp(prevRankings[movieId].rating);
+            const expectedProbWinner = winnerStrength / (winnerStrength + loserStrength);
+            ratingChange = learningRate * (1 - expectedProbWinner);
+          }
+        } else {
+          // Calculate new if winner wasn't in the batch
+          const winnerStrength = Math.exp(prevRankings[winner].rating);
+          const loserStrength = Math.exp(prevRankings[movieId].rating);
+          const expectedProbWinner = winnerStrength / (winnerStrength + loserStrength);
+          ratingChange = learningRate * (1 - expectedProbWinner);
+        }
+        
+        // Update momentum with adaptive scaling
+        const momentumScaling = volatilityFactor * consistencyFactor;
+        newMomentum[movieId] = (newMomentum[movieId] || 0) * MOMENTUM_FACTOR - ratingChange * momentumScaling;
+        
+        // Bayesian rating update
+        // Get current uncertainty values
+        const loserUncertainty = prevRankings[movieId].ratingUncertainty;
+        
+        // Calculate observation strength based on group context and consistency
+        const isGroupComparison = prevRankings[winner].groupSelections.appearances > 0 || 
+                                prevRankings[movieId].groupSelections.appearances > 0;
+        
+        // Adjust observation strength based on group context and adaptive factors
+        const baseObservationStrength = isGroupComparison ? 0.8 : 1.0;
+        const adaptiveObservationStrength = baseObservationStrength * volatilityFactor;
+        
+        // Adaptively adjust uncertainty reduction rate based on progress and consistency
+        const progress = comparisons / maxComparisons;
+        const uncertaintyReductionRate = 0.1 * (
+          progress < 0.3 ? 0.8 : // Slower reduction early on
+          progress > 0.7 ? 1.2 : // Faster reduction late in the process
+          1.0
+        ) * consistencyFactor;  // More consistent results lead to faster reduction
+        
+        // Calculate new uncertainties with adaptive reduction
+        const newLoserUncertainty = loserUncertainty * (1 - uncertaintyReductionRate * adaptiveObservationStrength);
+        
+        // Calculate Bayesian adjusted rating changes with adaptive scaling
+        const bayesianLoserChange = ratingChange * (1 + loserUncertainty) * adaptiveObservationStrength;
+        
+        // Only initialize once per movie in the batch
+        if (!updatedMovies.has(movieId)) {
+          // Set initial update for this movie
+          newRankings[movieId] = {
+            ...prevRankings[movieId],
+            // Start with base rating
+            rating: prevRankings[movieId].rating,
+            ratingMean: prevRankings[movieId].ratingMean,
+            ratingUncertainty: prevRankings[movieId].ratingUncertainty,
+            losses: prevRankings[movieId].losses,
+            comparisons: prevRankings[movieId].comparisons,
+            recentResults: [...prevRankings[movieId].recentResults]
+          };
+          updatedMovies.add(movieId);
+        }
+        
+        // Incrementally update the movie's rating and stats
+        newRankings[movieId] = {
+          ...newRankings[movieId],
+          // Accumulate rating changes
+          rating: newRankings[movieId].rating - ratingChange,
+          ratingMean: newRankings[movieId].ratingMean - bayesianLoserChange,
+          ratingUncertainty: Math.max(0.1, newLoserUncertainty),
+          losses: (newRankings[movieId].losses || 0) + 1,
+          comparisons: newRankings[movieId].comparisons + 1,
+          recentResults: [...newRankings[movieId].recentResults.slice(-9), {
+            opponent: winner,
+            result: 0,
+            ratingDiff: Math.abs(prevRankings[winner].rating - prevRankings[movieId].rating),
+            learningRate: learningRate
+          }]
+        };
+      });
       
-      // Track which movies were updated for cache invalidation
-      updatedMovies.add(winner);
-      updatedMovies.add(loser);
-      
-      setRecentChanges(prev => [...prev.slice(-CONVERGENCE_CHECK_WINDOW + 1), ratingChange]);
+      // Apply momentum after all individual updates
+      if (updates.losses.length > 0) {
+        // Apply momentum as a single adjustment at the end
+        newRankings[movieId].rating += newMomentum[movieId] * MOMENTUM_FACTOR;
+      }
     });
     
     // Selectively invalidate cache for updated movies
@@ -1513,6 +2051,13 @@ const processBatchUpdate = useCallback((updates) => {
     // Log cache statistics occasionally
     if (Math.random() < 0.1) {
       console.log('Transitivity cache stats:', transitivityCache.getStats());
+      console.log(`Batch update: Updated ${updatedMovies.size} movies from ${uniqueUpdates.length} comparisons`);
+    }
+    
+    // Add average rating change to recent changes for convergence tracking
+    if (uniqueUpdates.length > 0) {
+      const avgRatingChange = totalRatingChange / uniqueUpdates.length;
+      setRecentChanges(prev => [...prev.slice(-CONVERGENCE_CHECK_WINDOW + 1), avgRatingChange]);
     }
     
     setMovieMomentum(newMomentum);
@@ -1521,14 +2066,71 @@ const processBatchUpdate = useCallback((updates) => {
   
   checkConvergence();
 }, [
+  rankings,
   getDynamicLearningRate, 
   calculateAdaptiveLearningRate,
   checkConvergence, 
   movieMomentum,
   comparisons,
   maxComparisons,
-  invalidateTransitivityCache // Add the new cache invalidation function
+  invalidateTransitivityCache
 ]);
+
+// Queue system for pending comparison operations
+// This helps prioritize high-impact and high-uncertainty comparisons
+class PriorityUpdateQueue {
+  constructor() {
+    this.queue = [];
+    this.processing = false;
+  }
+  
+  // Add update to the queue with priority metadata
+  enqueue(update, priority, uncertainty) {
+    this.queue.push({
+      ...update,
+      priority: priority || 0,
+      uncertainty: uncertainty || 0,
+      timestamp: Date.now()
+    });
+    
+    // Sort queue by priority (high to low), then uncertainty (high to low), then timestamp (older first)
+    this.queue.sort((a, b) => {
+      if (a.priority !== b.priority) return b.priority - a.priority;
+      if (a.uncertainty !== b.uncertainty) return b.uncertainty - a.uncertainty;
+      return a.timestamp - b.timestamp; // Process older requests first when other factors are equal
+    });
+  }
+  
+  // Get the next batch of updates to process
+  dequeue(batchSize) {
+    if (this.queue.length === 0) return [];
+    return this.queue.splice(0, batchSize);
+  }
+  
+  // Check if the queue is empty
+  isEmpty() {
+    return this.queue.length === 0;
+  }
+  
+  // Get the current queue size
+  size() {
+    return this.queue.length;
+  }
+  
+  // Get queue statistics
+  getStats() {
+    if (this.isEmpty()) return { size: 0, avgPriority: 0, avgUncertainty: 0 };
+    
+    const avgPriority = this.queue.reduce((sum, item) => sum + item.priority, 0) / this.queue.length;
+    const avgUncertainty = this.queue.reduce((sum, item) => sum + item.uncertainty, 0) / this.queue.length;
+    
+    return {
+      size: this.queue.length,
+      avgPriority: avgPriority,
+      avgUncertainty: avgUncertainty
+    };
+  }
+}
 
 const updateRankings = useCallback((winnerIdentifier, loserIdentifier, currentGroup) => {
   // Save current state to history
@@ -1614,17 +2216,58 @@ const updateRankings = useCallback((winnerIdentifier, loserIdentifier, currentGr
     return newRankings;
   });
 
-  // Add to pending updates and process if optimal batch size reached
+  // Initialize priority queue for updates if it doesn't exist
+  if (!window.updateQueue) {
+    window.updateQueue = new PriorityUpdateQueue();
+  }
+  
+  // Calculate priority and uncertainty metrics for this update
+  const updatePriority = isCurrentComparisonHighImpact ? 1.0 : 0.5;
+  const updateUncertainty = Math.max(
+    rankings[winnerIdentifier]?.ratingUncertainty || 0,
+    rankings[loserIdentifier]?.ratingUncertainty || 0
+  );
+  
+  // Add to priority queue with metadata
+  window.updateQueue.enqueue(
+    { winner: winnerIdentifier, loser: loserIdentifier },
+    updatePriority,
+    updateUncertainty
+  );
+  
+  // Log queue stats occasionally
+  if (Math.random() < 0.1) {
+    console.log('Update queue stats:', window.updateQueue.getStats());
+  }
+  
+  // Process queue if we have enough updates
   setPendingUpdates(prev => {
-    const newPending = [...prev, { winner: winnerIdentifier, loser: loserIdentifier }];
+    // Determine optimal batch size
     const optimalBatchSize = calculateOptimalBatchSize();
     
-    if (newPending.length >= optimalBatchSize) {
-      console.log(`Processing batch of size ${optimalBatchSize}`);
-      processBatchUpdate(newPending);
+    // Check if we should process a batch now
+    if (window.updateQueue.size() >= optimalBatchSize) {
+      // Get the highest priority batch from the queue
+      const batchToProcess = window.updateQueue.dequeue(optimalBatchSize);
+      
+      console.log(`Processing batch of ${batchToProcess.length} updates (${window.updateQueue.size()} remaining in queue)`);
+      
+      // Process this high-priority batch
+      processBatchUpdate(batchToProcess);
       return [];
+    } else {
+      // Check if any pending updates are stored from before the queue was implemented
+      const newPending = [...prev, { winner: winnerIdentifier, loser: loserIdentifier }];
+      
+      // If we have enough pending updates (from before implementing queue), process them
+      if (newPending.length >= optimalBatchSize) {
+        console.log(`Processing batch of ${newPending.length} legacy updates`);
+        processBatchUpdate(newPending);
+        return [];
+      }
+      
+      return newPending;
     }
-    return newPending;
   });
 
   setComparisons(prev => {
@@ -1637,6 +2280,19 @@ const updateRankings = useCallback((winnerIdentifier, loserIdentifier, currentGr
       setTimeout(() => performGlobalOptimization(), 0);
     }
     
+    // Check if we should force-process the update queue
+    if (window.updateQueue && window.updateQueue.size() > 0 && 
+        newComparisons % 5 === 0) { // Every 5 comparisons
+      setTimeout(() => {
+        // Process whatever is in the queue, regardless of size
+        const queueContent = window.updateQueue.dequeue(window.updateQueue.size());
+        if (queueContent.length > 0) {
+          console.log(`Force processing ${queueContent.length} queued updates`);
+          processBatchUpdate(queueContent);
+        }
+      }, 0);
+    }
+    
     return newComparisons;
   });
 }, [
@@ -1645,19 +2301,41 @@ const updateRankings = useCallback((winnerIdentifier, loserIdentifier, currentGr
   calculateOptimalBatchSize, 
   comparisons, 
   maxComparisons, 
-  performGlobalOptimization
+  performGlobalOptimization,
+  isCurrentComparisonHighImpact
 ]);
 
   useEffect(() => {
-    if (step === 'results' && pendingUpdates.length > 0) {
-      processBatchUpdate(pendingUpdates);
-      setPendingUpdates([]);
+    if (step === 'results') {
+      // Process any remaining updates in the queue and pending state when reaching results
+      if (window.updateQueue && !window.updateQueue.isEmpty()) {
+        const queuedUpdates = window.updateQueue.dequeue(window.updateQueue.size());
+        if (queuedUpdates.length > 0) {
+          console.log(`Processing ${queuedUpdates.length} remaining queued updates at completion`);
+          processBatchUpdate(queuedUpdates);
+        }
+      }
+      
+      // Process any legacy pending updates
+      if (pendingUpdates.length > 0) {
+        console.log(`Processing ${pendingUpdates.length} remaining legacy updates at completion`);
+        processBatchUpdate(pendingUpdates);
+        setPendingUpdates([]);
+      }
     }
     
     // Cleanup on step change - suggest garbage collection
     return () => {
-      if (typeof window !== 'undefined' && window.gcCollect) {
-        window.gcCollect();
+      if (typeof window !== 'undefined') {
+        // Clear update queue when changing steps
+        if (window.updateQueue) {
+          window.updateQueue = new PriorityUpdateQueue();
+        }
+        
+        // Request garbage collection if available
+        if (window.gcCollect) {
+          window.gcCollect();
+        }
       }
     };
   }, [step, pendingUpdates, processBatchUpdate]);
